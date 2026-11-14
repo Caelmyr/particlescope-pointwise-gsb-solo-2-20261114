@@ -12,7 +12,8 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from particlescope import create_app
-from particlescope.rendering import png_bytes
+from particlescope import rendering
+from particlescope.rendering import png_bytes, heatmap_image
 from particlescope.synthetic import generate_sample
 from particlescope.registration import phase_correlation, translate, affine_landmarks
 from particlescope.segmentation import evaluate_reference
@@ -319,6 +320,77 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+    def test_heatmap_matches_gaussian_reference_and_edges(self):
+        rng = np.random.default_rng(7)
+        rows = []
+        for _ in range(250):
+            rows.append({
+                'centroid_x': float(rng.integers(-15, 705)),
+                'centroid_y': float(rng.integers(-15, 505)),
+                'diameter': float(rng.random() * 30),
+            })
+        pixels = np.random.default_rng(11).integers(0, 255, (500, 700, 3), dtype=np.uint8)
+        image = Image.fromarray(pixels)
+        radius = 37
+        rendered, info = heatmap_image(image, rows, 'diameter', radius)
+        values = np.zeros((500, 700))
+        weight = np.zeros_like(values)
+        for row in rows:
+            x = max(0, min(699, int(round(row['centroid_x']))))
+            y = max(0, min(499, int(round(row['centroid_y']))))
+            values[y, x] += row['diameter']
+            weight[y, x] += 1
+        smooth_values = ndi.gaussian_filter(values, radius)
+        smooth_weights = ndi.gaussian_filter(weight, radius)
+        average = np.divide(smooth_values, smooth_weights, out=np.zeros_like(values), where=smooth_weights > 1e-8)
+        active = smooth_weights > max(float(smooth_weights.max()) * 0.01, 1e-8)
+        lo, hi = np.percentile(average[active], [5, 95])
+        normalized = np.clip((average - lo) / max(hi - lo, 1e-9), 0, 1)
+        tint = np.stack([
+            normalized * 255,
+            200 * (1 - np.abs(normalized * 2 - 1)),
+            (1 - normalized) * 255,
+        ], axis=2)
+        expected = pixels.astype(float)
+        expected[active] = expected[active] * 0.35 + tint[active] * 0.65
+        expected = expected.astype(np.uint8)
+        self.assertLessEqual(int(np.abs(np.asarray(rendered).astype(int) - expected.astype(int)).max()), 1)
+        self.assertAlmostEqual(info['minimum'], float(lo), places=6)
+        self.assertAlmostEqual(info['maximum'], float(hi), places=6)
+        self.assertTrue(np.all(np.asarray(rendered)[~active] == pixels[~active]))
+
+    def test_heatmap_sparse_support_and_empty_rows(self):
+        image = Image.new('RGB', (320, 240), (12, 18, 24))
+        plain, empty = heatmap_image(image, [], 'diameter', 40)
+        self.assertEqual(empty['minimum'], 0.0)
+        self.assertEqual(np.asarray(plain).tolist(), np.asarray(image).tolist())
+        rows = [{'centroid_x': 160.0, 'centroid_y': 120.0, 'diameter': 8.0}]
+        rendered, info = heatmap_image(image, rows, 'diameter', 25)
+        array = np.asarray(rendered)
+        self.assertNotEqual(array[120, 160].tolist(), [12, 18, 24])
+        self.assertEqual(array[0, 0].tolist(), [12, 18, 24])
+        self.assertAlmostEqual(info['minimum'], 8.0, places=9)
+        self.assertAlmostEqual(info['maximum'], 8.0, places=9)
+        mixed = [{'centroid_x': 100.0, 'centroid_y': 120.0, 'diameter': 4.0},
+                 {'centroid_x': 220.0, 'centroid_y': 120.0, 'diameter': 20.0}]
+        _, spread = heatmap_image(image, mixed, 'diameter', 25)
+        self.assertGreater(spread['maximum'], spread['minimum'])
+
+    def test_heatmap_tiles_cover_image_without_seams(self):
+        saved = rendering.HEATMAP_TILE_PIXELS
+        try:
+            rng = np.random.default_rng(5)
+            rows = [{'centroid_x': float(rng.integers(0, 260)), 'centroid_y': float(rng.integers(0, 180)),
+                     'diameter': float(rng.random() * 12)} for _ in range(120)]
+            image = Image.fromarray(np.random.default_rng(9).integers(0, 255, (180, 260, 3), dtype=np.uint8))
+            rendering.HEATMAP_TILE_PIXELS = 40_000_000
+            whole, _ = heatmap_image(image, rows, 'diameter', 18)
+            rendering.HEATMAP_TILE_PIXELS = 200_000
+            tiled, _ = heatmap_image(image, rows, 'diameter', 18)
+            self.assertLessEqual(int(np.abs(np.asarray(whole).astype(int) - np.asarray(tiled).astype(int)).max()), 1)
+        finally:
+            rendering.HEATMAP_TILE_PIXELS = saved
 
 
 if __name__ == '__main__':

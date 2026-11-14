@@ -1,11 +1,18 @@
 import io
 import math
+import os
 import colorsys
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
+from scipy import fft as sfft
 from scipy import ndimage as ndi
 from .validation import ValidationError
 from .measurements import included_rows
+
+
+HEATMAP_TILE_PIXELS = 4_000_000
+HEATMAP_BAND_PIXELS = 500_000
+FFT_WORKERS = max(1, min(4, os.cpu_count() or 1))
 
 
 PALETTE = [
@@ -115,34 +122,149 @@ def overlay_image(image, labels, result, style=None):
     return output.convert('RGB')
 
 
+def gaussian_1d(sigma):
+    radius = int(4.0 * sigma + 0.5)
+    offsets = np.arange(-radius, radius + 1, dtype=float)
+    weights = np.exp(-0.5 / sigma ** 2 * offsets ** 2)
+    return weights / weights.sum(), radius
+
+
+def reflected_indices(start, stop, length):
+    index = np.mod(np.arange(start, stop), 2 * length)
+    return np.where(index < length, index, 2 * length - 1 - index)
+
+
+def folded_matrix(length, kernel):
+    matrix = np.zeros((length, length), dtype=float)
+    origin = np.arange(length)[:, None]
+    offsets = np.arange(len(kernel)) - len(kernel) // 2
+    source = np.mod(origin - offsets[None, :], 2 * length)
+    source = np.where(source < length, source, 2 * length - 1 - source)
+    np.add.at(matrix, (np.broadcast_to(origin, source.shape).ravel(), source.ravel()),
+              np.broadcast_to(kernel, source.shape).ravel())
+    return matrix
+
+
+def prefers_matrix(length, radius):
+    return length * length <= (length + 2 * radius) * math.log2(length + 2 * radius + 2)
+
+
+def axis_convolve(block, axis, kernel, radius, matrix, spectra):
+    if matrix is not None:
+        if axis == 0:
+            return np.tensordot(matrix, block, axes=(1, 0))
+        return np.tensordot(block, matrix.T, axes=(1, 0))
+    length = block.shape[axis]
+    spectrum = spectra.get(length)
+    if spectrum is None:
+        padded = np.zeros(length, dtype=float)
+        padded[:2 * radius + 1] = kernel
+        spectrum = sfft.rfft(np.roll(padded, -radius), workers=FFT_WORKERS)
+        spectra[length] = spectrum
+    moved = np.moveaxis(block, axis, -1)
+    filtered = sfft.irfft(sfft.rfft(moved, workers=FFT_WORKERS) * spectrum, n=length, workers=FFT_WORKERS)
+    return np.moveaxis(filtered, -1, axis)
+
+
+def tile_extent(height, width, pad_y, pad_x):
+    budget = max(1, HEATMAP_TILE_PIXELS)
+    side = max(1, int(math.sqrt(budget)))
+    minimum = 32
+    tile_y = height if pad_y == 0 else min(height, max(1, side - 2 * pad_y))
+    tile_x = width if pad_x == 0 else min(width, max(1, side - 2 * pad_x))
+    if pad_x and tile_x < min(width, minimum):
+        tile_x = width
+    if pad_y and tile_y < min(height, minimum):
+        tile_y = height
+    if pad_x and tile_x < width:
+        tile_x = min(tile_x, max(1, budget // (tile_y + 2 * pad_y) - 2 * pad_x))
+    if pad_y and tile_y < height:
+        tile_y = min(tile_y, max(1, budget // (tile_x + 2 * pad_x) - 2 * pad_y))
+    return max(1, tile_y), max(1, tile_x)
+
+
+def blockwise_gaussian(py, px, fields, height, width, sigma):
+    kernel, radius = gaussian_1d(sigma)
+    matrix_y = folded_matrix(height, kernel) if prefers_matrix(height, radius) else None
+    matrix_x = folded_matrix(width, kernel) if prefers_matrix(width, radius) else None
+    pad_y = 0 if matrix_y is not None else radius
+    pad_x = 0 if matrix_x is not None else radius
+    tile_y, tile_x = tile_extent(height, width, pad_y, pad_x)
+    outputs = [np.zeros((height, width), dtype=float) for _ in fields]
+    spectra = {}
+    for y0 in range(0, height, tile_y):
+        y1 = min(height, y0 + tile_y)
+        for x0 in range(0, width, tile_x):
+            x1 = min(width, x0 + tile_x)
+            sy0, sy1 = (max(0, y0 - pad_y), min(height, y1 + pad_y)) if pad_y else (0, height)
+            sx0, sx1 = (max(0, x0 - pad_x), min(width, x1 + pad_x)) if pad_x else (0, width)
+            inside = (py >= sy0) & (py < sy1) & (px >= sx0) & (px < sx1)
+            local_y = py[inside] - sy0
+            local_x = px[inside] - sx0
+            if pad_y:
+                rows = reflected_indices(y0 - radius, y1 + radius, height) - sy0
+            else:
+                rows = np.arange(sy1 - sy0)
+            if pad_x:
+                cols = reflected_indices(x0 - radius, x1 + radius, width) - sx0
+            else:
+                cols = np.arange(sx1 - sx0)
+            for output, values in zip(outputs, fields):
+                source = np.zeros((sy1 - sy0, sx1 - sx0), dtype=float)
+                if np.any(inside):
+                    np.add.at(source, (local_y, local_x), values[inside])
+                extended = source[np.ix_(rows, cols)]
+                extended = axis_convolve(extended, 0, kernel, radius, matrix_y, spectra)
+                extended = axis_convolve(extended, 1, kernel, radius, matrix_x, spectra)
+                top = radius if pad_y else y0
+                left = radius if pad_x else x0
+                output[y0:y1, x0:x1] = extended[top:top + (y1 - y0), left:left + (x1 - x0)]
+    return outputs
+
+
 def heatmap_image(image, rows, field='diameter', radius=20):
-    values = np.zeros((image.height, image.width), dtype=float)
-    weight = np.zeros_like(values)
-    for row in rows:
+    height, width = image.height, image.width
+    if not rows:
+        return image.convert('RGB'), {'minimum': 0.0, 'maximum': 0.0, 'field': field}
+    count = len(rows)
+    px = np.empty(count, dtype=np.intp)
+    py = np.empty(count, dtype=np.intp)
+    values = np.empty(count, dtype=float)
+    for index, row in enumerate(rows):
         x = int(round(row['centroid_x']))
         y = int(round(row['centroid_y']))
-        x = max(0, min(image.width - 1, x))
-        y = max(0, min(image.height - 1, y))
-        values[y, x] += row[field]
-        weight[y, x] += 1
-    smooth_values = ndi.gaussian_filter(values, radius)
-    smooth_weights = ndi.gaussian_filter(weight, radius)
-    average = np.divide(smooth_values, smooth_weights, out=np.zeros_like(values), where=smooth_weights > 1e-8)
+        px[index] = max(0, min(width - 1, x))
+        py[index] = max(0, min(height - 1, y))
+        values[index] = row[field]
+    smooth_values, smooth_weights = blockwise_gaussian(
+        py, px, [values, np.ones(count)], height, width, radius)
+    np.divide(smooth_values, smooth_weights, out=smooth_values, where=smooth_weights > 1e-8)
+    smooth_values[smooth_weights <= 1e-8] = 0
     active = smooth_weights > max(float(smooth_weights.max()) * 0.01, 1e-8)
+    del smooth_weights
+    normalized = smooth_values
     if np.any(active):
-        lo, hi = np.percentile(average[active], [5, 95])
-        normalized = np.clip((average - lo) / max(hi - lo, 1e-9), 0, 1)
+        lo, hi = np.percentile(normalized[active], [5, 95])
+        normalized -= lo
+        normalized /= max(hi - lo, 1e-9)
+        np.clip(normalized, 0, 1, out=normalized)
     else:
-        normalized = average
         lo = hi = 0
-    rgb = np.stack([
-        normalized * 255,
-        200 * (1 - np.abs(normalized * 2 - 1)),
-        (1 - normalized) * 255,
-    ], axis=2)
-    base = np.asarray(image.convert('RGB'), dtype=float)
-    base[active] = base[active] * 0.35 + rgb[active] * 0.65
-    return Image.fromarray(base.astype(np.uint8)), {'minimum': float(lo), 'maximum': float(hi), 'field': field}
+    output = np.empty((height, width, 3), dtype=np.uint8)
+    band_rows = max(1, HEATMAP_BAND_PIXELS // max(1, width))
+    for y0 in range(0, height, band_rows):
+        y1 = min(height, y0 + band_rows)
+        band = normalized[y0:y1]
+        tint = np.stack([
+            band * 255,
+            200 * (1 - np.abs(band * 2 - 1)),
+            (1 - band) * 255,
+        ], axis=2)
+        strip = np.asarray(image.crop((0, y0, width, y1)).convert('RGB'), dtype=float)
+        mask = active[y0:y1]
+        strip[mask] = strip[mask] * 0.35 + tint[mask] * 0.65
+        output[y0:y1] = strip.astype(np.uint8)
+    return Image.fromarray(output), {'minimum': float(lo), 'maximum': float(hi), 'field': field}
 
 
 def contact_sheet(image, labels, rows, columns=6, cell_size=130):
