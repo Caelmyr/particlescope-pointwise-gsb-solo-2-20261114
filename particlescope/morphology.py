@@ -1,7 +1,6 @@
 import math
 import numpy as np
 from scipy import ndimage as ndi
-from .imaging import disk
 from .statistics import scalar, describe
 from .validation import ValidationError
 
@@ -31,14 +30,122 @@ def porosity_report(binary, selected):
     }
 
 
+def _squared_distances_into(edt_float64, target_int32):
+    """Square a float64 EDT in place and store its exact integer result.
+
+    EDT values are square roots of integer squared grid distances, so their
+    square rounds to that integer. The float64 array is squared in place, then
+    rounded directly into the caller's int32 map without a second full-size
+    float buffer.
+    """
+    edt_float64 *= edt_float64
+    np.rint(edt_float64, out=edt_float64)
+    np.copyto(target_int32, edt_float64, casting='unsafe')
+
+
 def granulometry(binary, selected, radii):
+    """Disk-opening granulometry with per-scale, exact area results.
+
+    Each reported area is the pixel count of the image opened by the closed
+    Euclidean disk of that radius and intersected with the current analysis
+    region ``selected`` — the same definition as
+    ``ndi.binary_opening(base, disk(r)) & selected``. No image is downscaled
+    and no surrogate size estimator is substituted.
+
+    Speed and memory come from expressing the two morphological primitives as
+    exact Euclidean distance transforms (EDT), which scipy evaluates in linear
+    time with a small constant instead of its generic O(radius^2) neighborhood
+    filters:
+
+    * disk erosion keeps a foreground pixel iff its distance to the nearest
+      background is strictly greater than the radius (the disk includes its
+      boundary, so a background point at distance == radius still excludes it);
+    * disk dilation keeps a pixel iff its distance to an eroded pixel is at
+      most the radius.
+
+    The foreground EDT is evaluated once on a zero-padded buffer whose margin
+    is the largest requested radius; every scale's erosion is the same fixed
+    image window thresholded at that scale, so adding a scale costs only one
+    extra dilation EDT plus an O(N) bool copy. Each scale's erosion is embedded
+    in a max-margin buffer with zeros spanning its own radius-wide border,
+    because the dilation's outside-image zero border must be exactly one disk
+    wide (erosion can legitimately reach the image edge).
+
+    scipy only emits float64 EDTs. The one-time foreground map is converted to
+    its exact integer squared distance (grid distances are integral) and held
+    in int32, since it is reused for every scale; the per-scale dilation map is
+    consumed immediately and thresholded directly as float64 squared distance,
+    which is exact at every supported radius (no achievable grid squared
+    distance can round across an integer threshold). A single float64 EDT
+    scratch map, one padded bool erosion buffer, its preallocated complement
+    and one image-sized bool buffer (erosion, then the opened mask) are reused
+    across all scales, so the retained working set does not grow with the
+    number of radii. Zero padding reproduces scipy's ``border_value=0``
+    border handling.
+    """
     base = binary & selected
     initial = int(base.sum())
     rows = []
     last = initial
+    if initial == 0 or not radii:
+        for radius in radii:
+            rows.append({
+                'radius_px': radius,
+                'remaining_pixels': 0,
+                'remaining_percent': 0.0,
+                'removed_from_previous': 0,
+            })
+        return {
+            'initial_pixels': initial,
+            'scales': rows,
+            'method': '圆盘结构元素开运算颗粒谱，不等同于逐颗粒粒径分布',
+        }
+
+    height, width = base.shape
+    # The shared foreground distance map is padded by the largest requested
+    # radius. Image pixel (y, x) always lives at padded index (y + margin,
+    # x + margin); thresholding that fixed window reproduces exactly the disk
+    # erosion obtained from an image padded by any smaller radius. Capping the
+    # margin at the image extent keeps the footprint bounded when a radius
+    # exceeds the image, in which case every scale's erosion is already empty.
+    margin = min(max(radii), max(height, width))
+    padded_shape = (height + 2 * margin, width + 2 * margin)
+    # Reusable float64 EDT output (scipy requires float64) and the retained
+    # integer foreground squared-distance map used by every scale's erosion.
+    edt_scratch = np.empty(padded_shape, dtype=np.float64)
+    foreground_squared = np.empty(padded_shape, dtype=np.int32)
+    padded_erosion = np.zeros(padded_shape, dtype=bool)
+    complement = np.empty(padded_shape, dtype=bool)
+    padded_base = np.pad(base, margin, mode='constant', constant_values=False)
+    ndi.distance_transform_edt(padded_base, distances=edt_scratch)
+    del padded_base
+    _squared_distances_into(edt_scratch, foreground_squared)
+    inner = (slice(margin, margin + height), slice(margin, margin + width))
+    # Holds one scale's erosion first, then is overwritten with its opened mask.
+    mask = np.empty(base.shape, dtype=bool)
+
     for radius in radii:
-        opened = ndi.binary_opening(base, structure=disk(radius)) & selected
-        area = int(opened.sum())
+        radius_squared = radius * radius
+        np.greater(foreground_squared[inner], radius_squared, out=mask)
+        if not mask.any():
+            area = 0
+        else:
+            # Place the erosion at a radius-wide zero border inside the shared
+            # padded buffer; the unused outer band stays zero, which is exactly
+            # the radius-padded input the disk dilation EDT requires.
+            padded_erosion.fill(False)
+            shift = margin - min(radius, margin)
+            target = (
+                slice(shift, shift + height),
+                slice(shift, shift + width),
+            )
+            padded_erosion[target] = mask
+            # Reuse the complement buffer instead of allocating ~padded_erosion.
+            np.logical_not(padded_erosion, out=complement)
+            ndi.distance_transform_edt(complement, distances=edt_scratch)
+            edt_scratch *= edt_scratch
+            np.less_equal(edt_scratch[target], radius_squared, out=mask)
+            area = int(np.count_nonzero(mask & selected))
         rows.append({
             'radius_px': radius,
             'remaining_pixels': area,

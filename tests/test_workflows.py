@@ -320,6 +320,31 @@ class Workflows(unittest.TestCase):
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
 
+    def test_granulometry_endpoint_per_scale_results(self):
+        sample = self.demo('porous')
+        self.analyze(sample, method='otsu')
+        radii = [1, 2, 4, 8]
+        report = self.request('POST', sample, 'granulometry', {'radii': radii})
+        self.assertEqual([row['radius_px'] for row in report['scales']], radii)
+        areas = [row['remaining_pixels'] for row in report['scales']]
+        self.assertEqual(areas, sorted(areas, reverse=True))
+        self.assertEqual(report['initial_pixels'], areas[0] + report['scales'][0]['removed_from_previous'])
+        for row in report['scales']:
+            self.assertGreaterEqual(row['remaining_pixels'], 0)
+            self.assertGreaterEqual(row['removed_from_previous'], 0)
+            self.assertIn('remaining_percent', row)
+        # Re-running a single larger radius must reproduce the same scale area.
+        single = self.request('POST', sample, 'granulometry', {'radii': [8]})
+        self.assertEqual(single['scales'][0]['remaining_pixels'], report['scales'][3]['remaining_pixels'])
+
+    def test_granulometry_rejects_invalid_radii(self):
+        sample = self.demo('porous')
+        self.analyze(sample, method='otsu')
+        response = self.client.post(
+            '/api/samples/' + sample['id'] + '/granulometry', json={'radii': [4, 2]},
+        )
+        self.assertEqual(response.status_code, 400)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
