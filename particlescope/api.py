@@ -35,6 +35,7 @@ from .morphology import (
     porosity_report, granulometry, distance_thickness, minkowski_curve,
     box_counting, skeleton_report,
 )
+from . import core_shell as cs
 
 
 def body():
@@ -99,7 +100,7 @@ def create_api(store, service, recipes, jobs):
     def import_demo():
         from .synthetic import generate_sample
         data = request.get_json(silent=True) or {}
-        kind = v.choice(data.get('kind', 'isolated'), '演示类型', ['isolated', 'touching', 'illumination', 'fluorescence', 'fibers', 'porous'])
+        kind = v.choice(data.get('kind', 'isolated'), '演示类型', ['isolated', 'touching', 'illumination', 'fluorescence', 'fibers', 'porous', 'core_shell'])
         image, truth, details = generate_sample(kind)
         stream = io.BytesIO(png_bytes(image))
         meta = store.import_image(stream, details['name'])
@@ -746,5 +747,89 @@ def create_api(store, service, recipes, jobs):
         bins = v.integer(data.get('bins', 72), '角度采样数', 12, 360)
         with store.lock:
             return jsonify(radial_signature(service.labels(key), particle_id, bins))
+
+    @api.post('/samples/<key>/core-shell')
+    def create_core_shell(key):
+        data = body()
+        particle_id = v.integer(data.get('particle_id'), '颗粒编号', 1, 20000)
+        with store.lock:
+            meta = store.meta(key)
+            definition = cs.validate_core_definition(data, meta['width'], meta['height'])
+            record = cs.build_core_shell_record(
+                store, service, key, particle_id, definition, expected(data)
+            )
+            return jsonify(record), 201
+
+    @api.get('/samples/<key>/core-shell')
+    def core_shell_list(key):
+        with store.lock:
+            return jsonify({'records': cs.list_records(store, key)})
+
+    @api.get('/samples/<key>/core-shell/<record_id>')
+    def core_shell_detail(key, record_id):
+        with store.lock:
+            return jsonify(cs.get_record(store, key, record_id))
+
+    @api.get('/samples/<key>/core-shell/<record_id>/image')
+    def core_shell_image(key, record_id):
+        with store.lock:
+            v.identifier(record_id, '核壳分析编号')
+            suffix = request.args.get('suffix', '')
+            if suffix not in ('', '-core'):
+                raise v.ValidationError('图像后缀不支持')
+            target = store.sample_dir(key) / 'core_shell' / (record_id + suffix + '.png')
+            if not target.exists():
+                raise v.ValidationError('核壳分析图像尚未生成')
+            return send_file(target, max_age=0)
+
+    @api.delete('/samples/<key>/core-shell/<record_id>')
+    def core_shell_delete(key, record_id):
+        data = body()
+        with store.lock:
+            return jsonify(cs.delete_record(store, key, record_id, expected(data)))
+
+    @api.get('/samples/<key>/core-shell/<record_id>/export')
+    def core_shell_export(key, record_id):
+        import zipfile
+        from .exports import csv_bytes, result_json
+        with store.lock:
+            record = cs.get_record(store, key, record_id)
+            directory = store.sample_dir(key) / 'core_shell'
+            report = record['report']
+            ray_rows = []
+            for ray in report['rays']:
+                ray_rows.append({
+                    'ray_index': ray['index'],
+                    'start_x': ray['start'][0],
+                    'start_y': ray['start'][1],
+                    'direction_x': ray['direction'][0],
+                    'direction_y': ray['direction'][1],
+                    'angle_degrees': ray['angle_degrees'],
+                    'status': ray['status'],
+                    'thickness_px': ray['thickness_px'],
+                    'thickness': ray['thickness'],
+                })
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, 'w', zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('core-shell.json', result_json(record))
+                archive.writestr('rays.csv', csv_bytes(ray_rows, [
+                    'ray_index', 'start_x', 'start_y', 'direction_x', 'direction_y',
+                    'angle_degrees', 'status', 'thickness_px', 'thickness',
+                ]))
+                overlay = directory / f'{record_id}.png'
+                core_png = directory / f'{record_id}-core.png'
+                if overlay.exists():
+                    archive.write(overlay, 'core-shell-overlay.png')
+                if core_png.exists():
+                    archive.write(core_png, 'core-mask.png')
+                archive.writestr(
+                    'README.txt',
+                    'ParticleScope 核壳分析导出。\n'
+                    '坐标为图像像素，物理长度使用记录中的标定。\n'
+                    '仅 status=valid 的射线厚度可解释；hole/exterior/unreachable 射线已剔除，\n'
+                    '不能把穿过孔洞或颗粒外部的距离当作壳厚。\n'
+                    'overlay 中蓝=内核，橙=壳层，青线=有效壳厚射线，红线=穿孔洞，灰线=穿出外部。\n',
+                )
+            return binary_response(stream.getvalue(), f'core-shell-particle-{record["particle_id"]}.zip', 'application/zip')
 
     return api

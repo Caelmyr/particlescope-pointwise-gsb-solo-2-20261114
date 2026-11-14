@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = {sample:null,result:null,samples:[],catalog:null,recipes:[],selected:new Set(),view:'working',busy:false,points:[],zoom:1,dx:0,dy:0,loadToken:0};
+const state = {sample:null,result:null,samples:[],catalog:null,recipes:[],selected:new Set(),view:'working',busy:false,points:[],zoom:1,dx:0,dy:0,loadToken:0,coreShell:null};
 const segmentationFields = ['method','polarity','channel','threshold','sigma','min_area','max_area','adaptive_window','adaptive_offset','percentile','opening','closing','connectivity','fill_holes','exclude_edge','split_touching','seed_distance'];
 const stringFields = new Set(['method','polarity','channel']);
 let loadedImage = null;
@@ -7,6 +7,7 @@ let objectURL = null;
 let jobTimer = null;
 const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率'};
 function label(key){return labels[key] || key.replaceAll('_',' ')}
+Object.assign(labels,{particle_pixels:'颗粒像素数',core_pixels:'内核像素数',shell_pixels:'壳层像素数',hole_pixels:'孔洞像素数',core_area_fraction:'内核面积占比',shell_area_fraction:'壳层面积占比',particle_centroid:'颗粒质心 [x,y]',core_centroid:'内核质心 [x,y]',centroid_offset_px:'质心偏心 px',centroid_offset:'质心偏心',particle_equivalent_radius_px:'颗粒等效半径 px',core_equivalent_radius_px:'内核等效半径 px',eccentricity_ratio:'偏心程度(偏移/颗粒半径)',thickness_summary:'壳厚统计',thickness_uniformity_cv_percent:'壳厚变异系数 %',ray_count:'射线总数',valid_ray_count:'有效射线数',invalid_ray_count:'无效射线数',valid_ray_fraction:'有效射线比例',ray_status_counts:'射线状态计数',polar_angles_degrees:'方位角 °',polar_thickness:'方位壳厚(无效为null)',rays:'逐射线结果',rays_truncated:'逐射线已抽样',interpretation:'可解释性约定',valid:'有效',hole:'穿孔洞(剔除)',exterior:'穿出外部(剔除)',unreachable:'未达边界(剔除)',thickness_px:'壳厚 px',thickness:'壳厚',angle_degrees:'方位角 °',status:'状态',start:'起点 [x,y]',direction:'法线方向'});
 function el(tag, text, cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
 function status(message,error=false){$('status').textContent=message;$('status').classList.toggle('error',error)}
 function fmt(value){if(value===null||value===undefined)return '—';if(typeof value==='number')return Number.isInteger(value)?String(value):Number(value.toPrecision(6)).toString();if(typeof value==='boolean')return value?'是':'否';return String(value)}
@@ -117,7 +118,7 @@ async function selectSample(key){
   if(state.busy)return status('当前操作进行中，请稍候');
   const token=++state.loadToken;const data=await request(`/api/samples/${key}`);
   if(token!==state.loadToken)return;
-  state.sample=data.meta;state.view='working';state.points=[];loadedImage=null;resetView();
+  state.sample=data.meta;state.view='working';state.points=[];state.coreShellParticle=null;loadedImage=null;resetView();
   $('name').textContent=data.meta.name;$('size').textContent=`${data.meta.width} × ${data.meta.height} px`;
   $('archive').textContent=data.meta.archived?'恢复':'归档';
   $('sampleInfo').textContent=`分析区域：${data.meta.roi.type}；标定：1 px = ${fmt(data.meta.calibration.scale)} ${data.meta.calibration.unit}。图像版本 ${data.meta.image_revision}，修订 ${data.meta.revision}。`;
@@ -177,7 +178,7 @@ $('canvas').onclick=guard(async e=>{
   const required={rectangle:2,line:2,angle:3,point:1,profile:2,remove_object:1};
   if(required[mode]&&state.points.length===required[mode])await finishDrawing();
 });
-$('canvasMode').onchange=()=>{state.points=[];drawCanvas();status('在图像上点击选择坐标；多边形完成后点击“完成绘制”')};
+$('canvasMode').onchange=()=>{state.points=[];drawCanvas();status($('canvasMode').value==='core_shell'?'请先在颗粒详情打开核壳分析，再沿内核边界点击绘制多边形（≥3点）':'在图像上点击选择坐标；多边形完成后点击“完成绘制”')};
 $('cancelDrawing').onclick=()=>{state.points=[];drawCanvas();status('绘制已取消')};
 $('finishDrawing').onclick=guard(finishDrawing);
 async function finishDrawing(){
@@ -202,6 +203,12 @@ async function finishDrawing(){
     const data={revision:state.sample.revision,operation:mode,points};
     if(mode==='remove_object')data.point=points[0];
     await mutate('更新掩膜并重新测量…',()=>post(url('mask'),data));state.view='overlay';
+  }else if(mode==='core_shell'){
+    if(points.length<3)throw Error('内核区域至少需要三个点，请沿内核边界点击绘制多边形');
+    if(!state.coreShellParticle)throw Error('请先在颗粒详情中点击“核壳分析”，再绘制该颗粒的内核');
+    const particle=state.coreShellParticle;state.points=[];drawCanvas();
+    openCoreShellDialog(particle,{mode:'manual',points});
+    return;
   }else throw Error('请选择绘制工具');
   state.points=[];drawCanvas();showImage();
 }
@@ -225,7 +232,7 @@ async function mutate(message,fn){
 }
 $('run').onclick=guard(async()=>{requireSample();await mutate('正在分割、测量并保存结果…',()=>post(url('analyze'),{...parameters(),revision:state.sample.revision}));state.view='overlay';showImage();status(`分析完成：${state.result.count} 个颗粒，覆盖率 ${fmt(state.result.coverage)}%`)});
 document.querySelectorAll('[data-view]').forEach(button=>button.onclick=guard(()=>{requireSample();if(['overlay','mask','labels'].includes(button.dataset.view))requireResult();state.view=button.dataset.view;showImage()}));
-$('demo').onclick=guard(async()=>{const sample=await task('生成演示图像…',()=>post('/api/demo',{kind:$('demoKind').value}));await loadLibrary(sample.id);if($('demoKind').value==='fluorescence')setParameters({polarity:'light',channel:'green',method:'otsu'});else if($('demoKind').value==='porous')setParameters({polarity:'light',method:'otsu',fill_holes:false});status('演示已载入，自带参考掩膜，可分析后评估IoU')});
+$('demo').onclick=guard(async()=>{const kind=$('demoKind').value;const sample=await task('生成演示图像…',()=>post('/api/demo',{kind}));await loadLibrary(sample.id);if(kind==='fluorescence')setParameters({polarity:'light',channel:'green',method:'otsu'});else if(kind==='porous')setParameters({polarity:'light',method:'otsu',fill_holes:false});else if(kind==='core_shell')setParameters({polarity:'dark',channel:'gray',method:'otsu',fill_holes:false});status(kind==='core_shell'?'核壳演示已载入：运行分析后，在颗粒详情中做核壳分析':'演示已载入，自带参考掩膜，可分析后评估IoU')});
 $('upload').onchange=guard(async e=>{
   if(!e.target.files.length)return;const files=[...e.target.files];e.target.value='';
   const form=new FormData();for(const file of files)form.append('files',file);if($('projectFilter').value)form.append('project_id',$('projectFilter').value);
@@ -268,7 +275,199 @@ $('export').onclick=guard(()=>{
   const report=el('a','打开可打印报告 / 另存PDF');report.href=url('report');report.target='_blank';report.rel='noopener';grid.append(report);body.append(grid,el('p','报告内含标定、分割参数、叠加图、粒径分布和测量说明。','hint'));
 });
 function showParticle(row){
-  const body=openDialog('颗粒 #'+row.id);const image=el('img',undefined,'preview');image.src=url(`particle/${row.id}`);body.append(image);renderOutput(row,body);const button=el('button',row.included?'从统计中排除此颗粒':'重新纳入此颗粒');button.onclick=guard(async()=>{const excluded=new Set(state.result.measurement_filters?.exclude_ids||[]);row.included?excluded.add(row.id):excluded.delete(row.id);await mutate('更新颗粒筛选…',()=>post(url('filter'),{...state.result.measurement_filters,exclude_ids:[...excluded],revision:state.sample.revision}));$('dialog').close()});body.append(button);
+  const body=openDialog('颗粒 #'+row.id);const image=el('img',undefined,'preview');image.src=url(`particle/${row.id}`);body.append(image);renderOutput(row,body);
+  const coreButton=el('button','核壳分析（内核/外壳厚度与偏心）');
+  coreButton.onclick=guard(()=>openCoreShellDialog(row));
+  const button=el('button',row.included?'从统计中排除此颗粒':'重新纳入此颗粒');button.onclick=guard(async()=>{const excluded=new Set(state.result.measurement_filters?.exclude_ids||[]);row.included?excluded.add(row.id):excluded.delete(row.id);await mutate('更新颗粒筛选…',()=>post(url('filter'),{...state.result.measurement_filters,exclude_ids:[...excluded],revision:state.sample.revision}));$('dialog').close()});body.append(coreButton,button);
+}
+
+async function openCoreShellDialog(row,prefill=null){
+  requireResult();
+  const body=openDialog(`核壳分析 · 颗粒 #${row.id}`);
+  state.coreShellParticle=row;
+  const hint=el('p','为该已分割颗粒指定一个内核区域。系统沿内核边界外法线测量到外壳边界的局部壳厚；穿过孔洞或穿出颗粒外部的射线会被标记并剔除，不计入壳厚。','hint');
+  body.append(hint);
+
+  // 模式切换
+  const modeSel=el('select');
+  modeSel.append(new Option('手动绘制内核多边形','manual'),new Option('按灰度自动识别内核','auto'));
+  const modeLabel=el('label','内核指定方式');modeLabel.append(modeSel);
+  const autoBox=el('div',undefined,'two');
+  const polarity=el('select');polarity.append(new Option('内核比壳层暗 (dark)','dark'),new Option('内核比壳层亮 (light)','light'));
+  const polLabel=el('label','内核极性');polLabel.append(polarity);
+  const channel=el('select');for(const [v,t] of [['gray','灰度'],['red','红'],['green','绿'],['blue','蓝'],['hue','色相'],['saturation','饱和度'],['value','明度']])channel.append(new Option(t,v));
+  const chLabel=el('label','分析通道');chLabel.append(channel);
+  const threshold=el('input');threshold.type='number';threshold.min=0;threshold.max=255;threshold.placeholder='留空=自动Otsu';
+  const thLabel=el('label','灰度阈值(可留空)');thLabel.append(threshold);
+  const rayStep=el('input');rayStep.type='number';rayStep.min=0.25;rayStep.max=4;rayStep.step=0.25;rayStep.value=1;
+  const rsLabel=el('label','射线步进 px');rsLabel.append(rayStep);
+  autoBox.append(polLabel,chLabel,thLabel,rsLabel);
+  const manualHint=el('p','选择画布工具“绘制核壳内核”，在图上沿该颗粒内核边界点击≥3个点后点“完成绘制”，会自动回到此对话框。','hint');
+  const drawBtn=el('button','① 到画布绘制内核多边形（≥3点，完成绘制后自动返回）');
+  drawBtn.onclick=guard(()=>{
+    if(!state.result)throw Error('请先运行图像分析');
+    $('canvasMode').value='core_shell';state.points=[];drawCanvas();
+    $('dialog').close();
+    status(`请在颗粒 #${row.id} 的内核边界上点击≥3个点，然后点“完成绘制”`);
+  });
+  body.append(modeLabel,autoBox,manualHint,drawBtn);
+
+  if(prefill){modeSel.value=prefill.mode;if(prefill.mode==='manual')manualHint.textContent=`已记录 ${prefill.points.length} 个内核顶点，可直接运行或重新绘制。`}
+
+  const applyMode=()=>{const auto=modeSel.value==='auto';autoBox.style.display=auto?'':'none';manualHint.style.display=auto?'none':'';drawBtn.style.display=auto?'none':''};
+  modeSel.onchange=applyMode;applyMode();
+
+  const run=el('button','▶ 运行核壳分析','primary');
+  const output=el('div',undefined,'tool-output');
+  body.append(run,output);
+
+  run.onclick=guard(async()=>{
+    const payload={particle_id:row.id,revision:state.sample.revision,mode:modeSel.value,ray_step:Number(rayStep.value)||1};
+    if(modeSel.value==='manual'){
+      if(!prefill||prefill.mode!=='manual'||!prefill.points)throw Error('请先用画布工具绘制内核多边形');
+      payload.points=prefill.points;
+    }else{
+      payload.polarity=polarity.value;payload.channel=channel.value;
+      if(threshold.value.trim()!=='')payload.threshold=Number(threshold.value);
+    }
+    output.replaceChildren(el('p','正在沿内核边界追踪壳厚射线…','muted'));
+    const record=await task('正在计算核壳厚度…',()=>post(url('core-shell'),payload));
+    renderCoreShellRecord(record,output);
+    status(`核壳分析完成：有效射线 ${record.report.valid_ray_count}/${record.report.ray_count}`);
+  });
+
+  // 历史记录列表
+  const listWrap=el('div');body.append(el('h3','该样本的核壳分析记录'),listWrap);
+  const data=await request(url('core-shell'));
+  renderCoreShellList(data.records,listWrap,output);
+}
+
+function renderCoreShellList(records,wrap,output){
+  wrap.replaceChildren();
+  if(!records.length){wrap.append(el('p','暂无记录。','muted'));return}
+  for(const rec of records){
+    const card=el('div',undefined,'history-card');
+    card.append(el('h3',`颗粒 #${rec.particle_id} · ${rec.mode==='manual'?'手动内核':'自动内核'} · ${rec.created_at.replace('T',' ').slice(0,19)}`));
+    const meta=el('p',`有效射线 ${Math.round((rec.valid_ray_fraction||0)*100)}% · 平均壳厚 ${fmt(rec.mean_thickness)} · 偏心 ${fmt(rec.eccentricity_ratio)} · 壳厚CV ${fmt(rec.uniformity_cv_percent)}%${rec.stale?' · 对应旧图像(请重新分析)':''}`);
+    card.append(meta);
+    const open=el('button','查看并定位');
+    open.onclick=guard(async()=>{const full=await request(url(`core-shell/${rec.id}`));renderCoreShellRecord(full,output)});
+    const dl=el('a','↓ 下载 ZIP');dl.href=url(`core-shell/${rec.id}/export`);
+    const del=el('button','删除');
+    del.onclick=guard(async()=>{await post(url(`core-shell/${rec.id}`),{revision:state.sample.revision},'DELETE');const d=await request(url('core-shell'));renderCoreShellList(d.records,wrap,output);status('核壳记录已删除')});
+    card.append(open,dl,del);wrap.append(card);
+  }
+}
+
+function polarThicknessChart(angles,values,container){
+  const width=900,height=300;
+  const canvas=el('canvas');canvas.width=width;canvas.height=height;container.append(canvas);
+  const c=canvas.getContext('2d');
+  c.fillStyle='#10202b';c.fillRect(0,0,width,height);
+  c.fillStyle='#cde3ea';c.font='14px sans-serif';
+  c.fillText('沿方位角的局部壳厚（断开处=该方位射线无效，已剔除）',18,24);
+  const left=55,right=870,top=50,bottom=260;
+  const valid=values.filter(v=>v!==null);
+  const high=Math.max(...valid,1);const low=0;
+  c.strokeStyle='#3d5567';c.beginPath();c.moveTo(left,top);c.lineTo(left,bottom);c.lineTo(right,bottom);c.stroke();
+  for(let i=0;i<=4;i++){const y=bottom-i*(bottom-top)/4;c.fillStyle='#9bb5c6';c.font='11px sans-serif';
+    c.fillText(fmt(low+(high-low)*i/4).slice(0,8),3,y);
+    c.strokeStyle='#263e4d';c.beginPath();c.moveTo(left,y);c.lineTo(right,y);c.stroke()}
+  const xAt=i=>left+(right-left)*i/Math.max(values.length-1,1);
+  const yAt=v=>bottom-(v-low)/(high-low)*(bottom-top);
+  c.strokeStyle='#64e4ba';c.lineWidth=2;let pen=false;
+  values.forEach((v,i)=>{
+    if(v===null){pen=false;return}
+    const x=xAt(i),y=yAt(v);
+    if(!pen){c.beginPath();c.moveTo(x,y);pen=true}else c.lineTo(x,y);
+  });
+  c.stroke();
+  // 无效方位用红色空点标出，有效方位用青色点
+  values.forEach((v,i)=>{const x=xAt(i);c.beginPath();c.arc(x,bottom,3,0,Math.PI*2);
+    if(v===null){c.fillStyle='#ff7878'}else{c.fillStyle='#64e4ba'}c.fill()});
+  c.fillStyle='#9bb5c6';c.font='11px sans-serif';
+  angles.forEach((a,i)=>{if(i%6===0)c.fillText(Math.round(a)+'°',xAt(i)-10,bottom+16)});
+  c.fillStyle='#ff7878';c.fillText('● 无效方位（孔洞/贴壁/接触）',180,25);
+  c.fillStyle='#64e4ba';c.fillText('● 有效壳厚',360,25);
+}
+
+function renderCoreShellRecord(record,output){
+  output.replaceChildren();
+  const r=record.report;
+  if(record.stale){output.append(el('p','该记录对应旧图像版本，数值仅供参考，建议重新分析。','hint'))}
+  // 叠加图（可点击回到画布定位）
+  const img=el('img',undefined,'preview');
+  const imgUrl=url(`core-shell/${record.id}/image`)+'?v='+Date.now();
+  img.src=imgUrl;img.title='点击在主画布定位该颗粒';
+  img.style.cursor='crosshair';
+  img.onclick=guard(()=>locateCoreShellOnCanvas(record));
+  output.append(img);
+  output.append(el('p','蓝=内核，橙=壳层；青线=有效壳厚射线，红线=穿过孔洞，灰线=穿出外部；黄线连接颗粒质心(绿)与内核质心(蓝)。点击上图可在主画布定位。','muted'));
+
+  // 方位壳厚极向曲线：无效方位(null)留空，不连零、不伪造壳厚
+  if(r.polar_thickness.some(v=>v!==null)){
+    polarThicknessChart(r.polar_angles_degrees,r.polar_thickness,output);
+  }
+
+  // 关键指标
+  const metrics=el('div',undefined,'metric-grid');
+  const cards=[
+    ['有效射线',`${r.valid_ray_count} / ${r.ray_count}`],
+    ['无效射线(剔除)',`${r.invalid_ray_count}`],
+    ['平均壳厚',fmt(r.thickness_summary.mean)],
+    ['中位壳厚',fmt(r.thickness_summary.median)],
+    ['最小/最大壳厚',`${fmt(r.thickness_summary.minimum)} / ${fmt(r.thickness_summary.maximum)}`],
+    ['壳厚变异系数%',fmt(r.thickness_uniformity_cv_percent)],
+    ['偏心程度',fmt(r.eccentricity_ratio)],
+    ['质心偏心',fmt(r.centroid_offset)],
+    ['内核面积占比',fmt(r.core_area_fraction)],
+    ['孔洞像素',fmt(r.hole_pixels)],
+  ];
+  for(const [k,val] of cards){const c=el('div',undefined,'metric-card');c.append(el('small',k),el('strong',val));metrics.append(c)}
+  output.append(metrics);
+
+  // 射线状态计数
+  const sc=el('div',undefined,'metric-grid');
+  for(const [k,val] of Object.entries(r.ray_status_counts)){const c=el('div',undefined,'metric-card');c.append(el('small',label(k)),el('strong',fmt(val)));sc.append(c)}
+  output.append(el('h3','射线可解释性（失效原因计数）'),sc);
+
+  for(const w of r.warnings)output.append(el('p','⚠ '+w,'hint'));
+  output.append(el('p',r.interpretation,'hint'));
+
+  // 逐射线表（抽样）
+  const tableWrap=el('div',undefined,'table-wrap');const table=el('table');
+  const thead=el('thead');const htr=el('tr');for(const h of ['#','方位角°','状态','壳厚px','壳厚'])htr.append(el('th',h));thead.append(htr);table.append(thead);
+  const tbody=el('tbody');
+  for(const ray of r.rays){const tr=el('tr');if(ray.status!=='valid')tr.style.opacity=.55;for(const val of [ray.index,ray.angle_degrees,label(ray.status),ray.thickness_px??'—',ray.thickness??'—'])tr.append(el('td',fmt(val)));tbody.append(tr)}
+  table.append(tbody);tableWrap.append(table);output.append(el('h3',r.rays_truncated?`逐射线（显示抽样 ${r.rays.length} 条，完整见下载）`:'逐射线结果'),tableWrap);
+
+  const dl=el('a','↓ 下载核壳分析 ZIP（JSON/射线CSV/叠加图/内核掩膜）');
+  dl.href=url(`core-shell/${record.id}/export`);dl.className='primary';dl.style.display='inline-block';dl.style.marginTop='12px';
+  const locate=el('button','回到主画布定位该颗粒');
+  locate.onclick=guard(()=>locateCoreShellOnCanvas(record));
+  output.append(dl,el('br'),locate);
+}
+
+async function locateCoreShellOnCanvas(record){
+  if(state.sample.id!==record.sample_id){throw Error('该记录属于其他样本')}
+  // 找到对应颗粒行，切到叠加图并把颗粒质心放到视口中心
+  const row=state.result?.particles.find(p=>p.id===record.particle_id);
+  state.view='overlay';showImage();$('dialog').close();
+  await new Promise(res=>{const t=setInterval(()=>{if(loadedImage){clearInterval(t);res()}},60);setTimeout(()=>{clearInterval(t);res()},3000)});
+  if(row){
+    const canvas=$('canvas');
+    state.zoom=Math.max(2,state.zoom);
+    const scale=Math.min(canvas.parentElement.clientWidth/canvas.width,canvas.parentElement.clientHeight/canvas.height)*state.zoom;
+    state.dx=canvas.parentElement.clientWidth/2-row.centroid_x*scale;
+    state.dy=canvas.parentElement.clientHeight/2-row.centroid_y*scale;
+    transform();
+    drawCanvas();
+    // 定位标记
+    const ctx=canvas.getContext('2d');
+    ctx.beginPath();ctx.strokeStyle='#ff5d5d';ctx.lineWidth=Math.max(3,canvas.width/150);
+    ctx.arc(row.centroid_x,row.centroid_y,Math.max(14,canvas.width/40),0,Math.PI*2);ctx.stroke();
+    status(`已定位到颗粒 #${record.particle_id}（核壳分析 ${record.id.slice(0,8)}）`);
+  }
 }
 $('annotations').onclick=guard(async()=>{
   requireSample();const data=await request(url('annotations'));const body=openDialog('人工测量与标注');body.append(el('p','使用画布工具选择线段、角度或多边形，点击对应端点即可保存。标注随尺寸标定更新。','hint'));
