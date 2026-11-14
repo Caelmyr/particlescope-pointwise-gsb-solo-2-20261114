@@ -12,11 +12,15 @@
   <div class="tag">图像分析实验室</div>
   <button id="tools">分析工具箱</button>
   <button id="compare">样本对照</button>
+  <button id="compensationBtn">荧光串色校正</button>
   <button id="batch">批量任务</button>
   <select id="demoKind" aria-label="演示样本类型">
     <option value="isolated">离散微球</option><option value="touching">粘连微球</option>
     <option value="illumination">不均匀照明</option><option value="fluorescence">荧光颗粒</option>
     <option value="fibers">取向纤维</option><option value="porous">多孔材料</option>
+    <option value="spillover_red">红单染对照（串色）</option>
+    <option value="spillover_green">绿单染对照（串色）</option>
+    <option value="spillover_mixed">红绿混染（串色）</option>
   </select>
   <button id="demo">载入演示</button>
   <label class="primary upload">＋ 导入图像<input id="upload" type="file" accept="image/*" multiple hidden></label>

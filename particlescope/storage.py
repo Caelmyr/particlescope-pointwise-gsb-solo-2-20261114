@@ -22,8 +22,9 @@ class Store:
         self.projects = self.root / 'projects'
         self.recipes = self.root / 'recipes'
         self.jobs = self.root / 'jobs'
+        self.compensation = self.root / 'compensation'
         self.lock = RLock()
-        for path in [self.root, self.samples, self.projects, self.recipes, self.jobs]:
+        for path in [self.root, self.samples, self.projects, self.recipes, self.jobs, self.compensation]:
             path.mkdir(parents=True, exist_ok=True)
 
     def json_read(self, path, default=None):

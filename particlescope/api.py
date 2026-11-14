@@ -1,5 +1,6 @@
 import io
 import json
+import uuid
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -99,7 +100,10 @@ def create_api(store, service, recipes, jobs):
     def import_demo():
         from .synthetic import generate_sample
         data = request.get_json(silent=True) or {}
-        kind = v.choice(data.get('kind', 'isolated'), '演示类型', ['isolated', 'touching', 'illumination', 'fluorescence', 'fibers', 'porous'])
+        kind = v.choice(data.get('kind', 'isolated'), '演示类型', [
+            'isolated', 'touching', 'illumination', 'fluorescence', 'fibers', 'porous',
+            'spillover_red', 'spillover_green', 'spillover_mixed',
+        ])
         image, truth, details = generate_sample(kind)
         stream = io.BytesIO(png_bytes(image))
         meta = store.import_image(stream, details['name'])
@@ -746,5 +750,149 @@ def create_api(store, service, recipes, jobs):
         bins = v.integer(data.get('bins', 72), '角度采样数', 12, 360)
         with store.lock:
             return jsonify(radial_signature(service.labels(key), particle_id, bins))
+
+    @api.post('/compensation/calibrate')
+    def compensation_calibrate():
+        from . import compensation as comp
+        data = body()
+        red_id = v.identifier(data.get('red_control'), '红色单染对照')
+        green_id = v.identifier(data.get('green_control'), '绿色单染对照')
+        if red_id == green_id:
+            raise v.ValidationError('红色与绿色单染对照必须是两张不同的图像')
+        percentile = v.real(data.get('background_percentile', 10), '背景分位数', 0, 50)
+        with store.lock:
+            red_image = store.working_image(red_id)
+            green_image = store.working_image(green_id)
+            calibration = comp.calibrate(red_image, green_image, percentile)
+            calibration_id = uuid.uuid4().hex
+            directory = store.compensation / calibration_id
+            directory.mkdir()
+            calibration.update({
+                'id': calibration_id,
+                'created_at': v.now(),
+                'red_control_id': red_id,
+                'green_control_id': green_id,
+                'red_control_name': store.meta(red_id)['name'],
+                'green_control_name': store.meta(green_id)['name'],
+                'background_percentile': percentile,
+                'runs': [],
+            })
+            store.json_write(directory / 'calibration.json', calibration)
+            return jsonify(calibration), 201
+
+    @api.get('/compensation')
+    def compensation_list():
+        with store.lock:
+            entries = []
+            for path in store.compensation.glob('*/calibration.json'):
+                data = store.json_read(path)
+                entries.append({
+                    key: data.get(key) for key in [
+                        'id', 'created_at', 'red_control_name', 'green_control_name',
+                        'reliable', 'condition_number', 'warnings', 'runs',
+                        'spillover_matrix',
+                    ]
+                })
+            entries.sort(key=lambda item: item.get('created_at') or '', reverse=True)
+            return jsonify({'calibrations': entries})
+
+    def require_calibration(calibration_id):
+        v.identifier(calibration_id, '校正编号')
+        path = store.compensation / calibration_id / 'calibration.json'
+        calibration = store.json_read(path)
+        if calibration is None:
+            raise v.ValidationError('校正关系不存在，请重新建立')
+        return calibration, store.compensation / calibration_id
+
+    @api.post('/compensation/<calibration_id>/apply')
+    def compensation_apply(calibration_id):
+        from . import compensation as comp
+        data = body()
+        sample_id = v.identifier(data.get('sample_id'), '混染样本')
+        with store.lock:
+            calibration, directory = require_calibration(calibration_id)
+            meta = store.meta(sample_id)
+            if (meta['width'], meta['height']) != (
+                calibration['size']['width'], calibration['size']['height']
+            ):
+                raise v.ValidationError(
+                    f"混染样本尺寸 {meta['width']}×{meta['height']} 与单染对照 "
+                    f"{calibration['size']['width']}×{calibration['size']['height']} 不一致，"
+                    '请使用同一视野、同一分辨率的图像'
+                )
+            result = service.require_result(sample_id)
+            labels = service.labels(sample_id)
+            image = store.working_image(sample_id)
+            unmix_result = comp.unmix(image, calibration, result['roi'])
+            particle_rows, noise = comp.particle_signal_rows(
+                labels, unmix_result, result['particles'],
+                calibration_reliable=calibration['reliable'],
+            )
+            summary = comp.summarize_rows(particle_rows)
+            separated = comp.separated_signal_image(unmix_result)
+            classified = comp.classification_image(image, labels, particle_rows, unmix_result)
+            run_id = uuid.uuid4().hex
+            run_dir = directory / 'runs' / run_id
+            run_dir.mkdir(parents=True)
+            store.image_write(run_dir / 'separated.png', separated)
+            store.image_write(run_dir / 'classification.png', classified)
+            store.image_write(run_dir / 'observed.png', image)
+            store.image_write(
+                run_dir / 'separated-red.png',
+                Image.fromarray(np.asarray(separated)[:, :, 0]),
+            )
+            store.image_write(
+                run_dir / 'separated-green.png',
+                Image.fromarray(np.asarray(separated)[:, :, 1]),
+            )
+            run = {
+                'id': run_id,
+                'sample_id': sample_id,
+                'sample_name': meta['name'],
+                'sample_revision': meta['revision'],
+                'analysis_id': result['id'],
+                'image_revision': meta['image_revision'],
+                'created_at': v.now(),
+                'backgrounds': unmix_result['backgrounds'],
+                'noise_std': noise,
+                'negative_fraction': unmix_result['negative_fraction'],
+                'saturated_percent': unmix_result['saturated_percent'],
+                'warnings': unmix_result['warnings'],
+                'summary': summary,
+                'particles': particle_rows,
+                'reliable_calibration': calibration['reliable'],
+            }
+            store.json_write(run_dir / 'run.json', run)
+            calibration = store.json_read(directory / 'calibration.json')
+            calibration['runs'].append({
+                'id': run_id, 'sample_id': sample_id, 'sample_name': meta['name'],
+                'created_at': run['created_at'], 'summary': summary,
+            })
+            store.json_write(directory / 'calibration.json', calibration)
+            return jsonify(run), 201
+
+    @api.get('/compensation/<calibration_id>/run/<run_id>/<kind>')
+    def compensation_asset(calibration_id, run_id, kind):
+        v.identifier(calibration_id, '校正编号')
+        v.identifier(run_id, '运行编号')
+        run_dir = store.compensation / calibration_id / 'runs' / run_id
+        if not run_dir.exists():
+            raise v.ValidationError('校正运行不存在')
+        if kind == 'run':
+            return jsonify(store.json_read(run_dir / 'run.json'))
+        if kind == 'csv':
+            from .compensation import particle_csv
+            run = store.json_read(run_dir / 'run.json')
+            return binary_response(particle_csv(run['particles']), 'compensation-particles.csv', 'text/csv')
+        images = {
+            'observed': 'observed.png',
+            'separated': 'separated.png',
+            'classification': 'classification.png',
+            'separated-red': 'separated-red.png',
+            'separated-green': 'separated-green.png',
+        }
+        if kind not in images:
+            raise v.ValidationError('不支持的资源类型')
+        return send_file(run_dir / images[kind], max_age=0)
 
     return api

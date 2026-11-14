@@ -225,7 +225,7 @@ async function mutate(message,fn){
 }
 $('run').onclick=guard(async()=>{requireSample();await mutate('正在分割、测量并保存结果…',()=>post(url('analyze'),{...parameters(),revision:state.sample.revision}));state.view='overlay';showImage();status(`分析完成：${state.result.count} 个颗粒，覆盖率 ${fmt(state.result.coverage)}%`)});
 document.querySelectorAll('[data-view]').forEach(button=>button.onclick=guard(()=>{requireSample();if(['overlay','mask','labels'].includes(button.dataset.view))requireResult();state.view=button.dataset.view;showImage()}));
-$('demo').onclick=guard(async()=>{const sample=await task('生成演示图像…',()=>post('/api/demo',{kind:$('demoKind').value}));await loadLibrary(sample.id);if($('demoKind').value==='fluorescence')setParameters({polarity:'light',channel:'green',method:'otsu'});else if($('demoKind').value==='porous')setParameters({polarity:'light',method:'otsu',fill_holes:false});status('演示已载入，自带参考掩膜，可分析后评估IoU')});
+$('demo').onclick=guard(async()=>{const kind=$('demoKind').value;const sample=await task('生成演示图像…',()=>post('/api/demo',{kind}));await loadLibrary(sample.id);if(kind==='fluorescence')setParameters({polarity:'light',channel:'green',method:'otsu'});else if(kind==='porous')setParameters({polarity:'light',method:'otsu',fill_holes:false});else if(kind.startsWith('spillover'))setParameters({polarity:'light',channel:'value',method:'otsu'});status(kind.startsWith('spillover')?'串色演示已载入：单染对照用于建立校正关系，混染样本请先分割再到“荧光串色校正”应用':'演示已载入，自带参考掩膜，可分析后评估IoU')});
 $('upload').onchange=guard(async e=>{
   if(!e.target.files.length)return;const files=[...e.target.files];e.target.value='';
   const form=new FormData();for(const file of files)form.append('files',file);if($('projectFilter').value)form.append('project_id',$('projectFilter').value);
@@ -383,3 +383,172 @@ async function init(){
   const [catalog,recipes]=await Promise.all([request('/api/catalog'),request('/api/recipes')]);state.catalog=catalog;state.recipes=recipes;await loadProjects();await loadLibrary();
 }
 init().catch(e=>status(e.message,true));
+
+/* ============ 荧光双通道串色校正（线性补偿/光谱解混） ============ */
+const CLASS_LABELS={red_only:'红单阳',green_only:'绿单阳',double_positive:'双阳性',negative:'双阴性'};
+const CLASS_COLORS={red_only:'#eb5c5c',green_only:'#60dc78',double_positive:'#e6c85a',negative:'#828c98'};
+$('compensationBtn').onclick=guard(openCompensation);
+
+function sampleSelectOptions(){
+  return state.samples.filter(s=>!s.archived).map(s=>({value:s.id,label:`${s.name}（${s.width}×${s.height}）`}));
+}
+function warnBox(messages,title='需要注意的问题'){
+  const box=el('div',undefined,'warn-box');
+  if(messages&&messages.length){
+    box.append(el('b',title));
+    const ul=el('ul');for(const msg of messages)ul.append(el('li',msg));box.append(ul);
+  }
+  return box;
+}
+async function openCompensation(){
+  const body=openDialog('荧光串色校正 · 单染对照与混染解混');
+  body.append(el('p','两种染料都会同时进入红、绿通道，直接比较通道亮度会把串色误判为双阳性。先用两张单染对照估计线性串色矩阵，再对已完成颗粒分割的混染样本解混；整个过程不修改原图，所有结果单独保存。','hint'));
+  const saved=await request('/api/compensation');
+  if(saved.calibrations.length){
+    const history=el('details');history.append(el('summary',`已保存的校正关系（${saved.calibrations.length}）`));
+    for(const cal of saved.calibrations){
+      const card=el('div',undefined,'history-card');
+      const badge=el('span',cal.reliable?'✓ 校正关系可靠':'⚠ 校正关系不可靠',cal.reliable?'reliability ok':'reliability bad');
+      card.append(el('h3',`${cal.red_control_name} → ${cal.green_control_name}`),badge);
+      card.append(el('p',`建立于 ${cal.created_at} · 条件数 ${fmt(cal.condition_number)} · 运行 ${cal.runs.length} 次`,'muted'));
+      if(cal.warnings&&cal.warnings.length)card.append(warnBox(cal.warnings));
+      const open=el('button','查看此校正关系');open.onclick=guard(()=>renderCalibration(cal.id));
+      card.append(open);history.append(card);
+    }
+    body.append(history);
+  }
+  const form=el('div',undefined,'comp-form');
+  form.append(el('h3','第一步 · 选择两张单染对照'));
+  const options=sampleSelectOptions();
+  const redSel=el('select'),greenSel=el('select');
+  for(const opt of options){redSel.append(new Option(opt.label,opt.value));greenSel.append(new Option(opt.label,opt.value))}
+  const redWrap=el('label','红色染料单染对照（红通道为真实信号）');redWrap.append(redSel);
+  const greenWrap=el('label','绿色染料单染对照（绿通道为真实信号）');greenWrap.append(greenSel);
+  const pct=el('input');pct.type='number';pct.value=10;pct.min=0;pct.max=50;
+  const pctWrap=el('label','背景估计分位数（%）');pctWrap.append(pct);
+  form.append(redWrap,greenWrap,pctWrap);
+  const build=el('button','建立校正关系','primary');
+  form.append(build);
+  const error=el('p','','dialog-error');form.append(error);
+  body.append(form);
+  build.onclick=guard(async()=>{
+    if(redSel.value===greenSel.value)throw Error('请选择两张不同的单染对照图像');
+    error.textContent='';
+    const cal=await task('正在估计串色系数与混合矩阵…',()=>post('/api/compensation/calibrate',{
+      red_control:redSel.value,green_control:greenSel.value,background_percentile:Number(pct.value),
+    }));
+    await renderCalibration(cal.id);
+  });
+}
+
+async function renderCalibration(calibrationId){
+  const list=await request('/api/compensation');
+  const cal=list.calibrations.find(c=>c.id===calibrationId);
+  if(!cal)throw Error('校正关系不存在');
+  const body=openDialog('校正关系 · 串色矩阵与混染应用');
+  body.append(el('p',`红色单染：${cal.red_control_name}　|　绿色单染：${cal.green_control_name}`,'hint'));
+  const banner=el('div',undefined,cal.reliable?'cal-banner ok':'cal-banner bad');
+  banner.append(el('b',cal.reliable?'✓ 校正关系通过可靠性检查，可以用于混染样本解混':'⚠ 校正关系未通过可靠性检查，解混结果仅作参考，相关颗粒会标记为无法可靠区分'));
+  body.append(banner);
+  if(cal.warnings&&cal.warnings.length)body.append(warnBox(cal.warnings));
+  const matrix=cal.spillover_matrix;
+  const grid=el('div',undefined,'metric-grid');
+  grid.append(
+    metricCard('红→绿串色系数',fmt(matrix[1][0])),
+    metricCard('绿→红串色系数',fmt(matrix[0][1])),
+    metricCard('矩阵条件数',fmt(cal.condition_number)),
+    metricCard('已应用次数',String(cal.runs.length)),
+  );
+  body.append(grid);
+  body.append(el('p','观测矩阵（行=观测通道，列=真实染料）：[红观测, 绿观测]ᵀ = M × [红真实, 绿真实]ᵀ','muted'));
+  const table=el('table');table.innerHTML=`<thead><tr><th></th><th>红染料真实信号</th><th>绿染料真实信号</th></tr></thead>
+    <tbody><tr><th>红通道观测</th><td>${fmt(matrix[0][0])}</td><td>${fmt(matrix[0][1])}</td></tr>
+    <tr><th>绿通道观测</th><td>${fmt(matrix[1][0])}</td><td>${fmt(matrix[1][1])}</td></tr></tbody>`;
+  const matrixWrap=el('div',undefined,'table-wrap');matrixWrap.append(table);body.append(matrixWrap);
+
+  const applyBox=el('div',undefined,'comp-form');
+  applyBox.append(el('h3','第二步 · 应用到混染样本（需先完成颗粒分割）'));
+  const sampleSel=el('select');
+  for(const opt of sampleSelectOptions())sampleSel.append(new Option(opt.label,opt.value));
+  const sampleWrap=el('label','混染样本');sampleWrap.append(sampleSel);applyBox.append(sampleWrap);
+  const runBtn=el('button','应用校正并按颗粒统计','primary');applyBox.append(runBtn);
+  const runError=el('p','','dialog-error');applyBox.append(runError);
+  body.append(applyBox);
+  const runOutput=el('div');body.append(runOutput);
+  runBtn.onclick=guard(async()=>{
+    runError.textContent='';
+    const run=await task('正在解混并逐颗粒统计信号…',()=>post(`/api/compensation/${calibrationId}/apply`,{sample_id:sampleSel.value}));
+    renderRun(calibrationId,run,runOutput);
+  });
+  if(cal.runs.length){
+    const runs=el('details');runs.append(el('summary',`历史应用（${cal.runs.length}）`));
+    for(const item of cal.runs){
+      const card=el('div',undefined,'history-card');
+      card.append(el('h3',`${item.sample_name} · ${item.created_at}`));
+      card.append(el('p',`红单阳 ${item.summary.red_only} · 绿单阳 ${item.summary.green_only} · 双阳性 ${item.summary.double_positive} · 不可靠 ${item.summary.ambiguous}`,'muted'));
+      const open=el('button','查看结果');open.onclick=guard(async()=>{
+        const fullRun=await request(`/api/compensation/${calibrationId}/run/${item.id}/run`);
+        renderRun(calibrationId,fullRun,runOutput);
+      });
+      card.append(open);runs.append(card);
+    }
+    body.append(runs);
+  }
+}
+
+function metricCard(name,value){
+  const card=el('div',undefined,'metric-card');card.append(el('small',name),el('strong',value));return card;
+}
+
+function renderRun(calibrationId,run,target){
+  target.replaceChildren();
+  const head=el('div',undefined,'result-head');
+  head.append(el('h3',`解混结果 · ${run.sample_name}`));
+  const csv=el('a','↓ 逐颗粒信号 CSV');
+  csv.href=`/api/compensation/${calibrationId}/run/${run.id}/csv`;csv.download='compensation-particles.csv';
+  head.append(csv);target.append(head);
+  if(run.warnings&&run.warnings.length)target.append(warnBox(run.warnings));
+  const s=run.summary;
+  const grid=el('div',undefined,'metric-grid');
+  grid.append(
+    metricCard('颗粒总数',String(s.particle_count)),
+    metricCard('红单阳',String(s.red_only)),
+    metricCard('绿单阳',String(s.green_only)),
+    metricCard('双阳性',String(s.double_positive)),
+    metricCard('双阴性',String(s.negative)),
+    metricCard('无法可靠区分',String(s.ambiguous)),
+  );
+  target.append(grid);
+  const imgGrid=el('div',undefined,'comp-images');
+  for(const [kind,title] of [['observed','混染原图（观测）'],['separated','分离后信号（红=红染料，绿=绿染料）'],['classification','颗粒分类叠加（紫圈=不可靠）']]){
+    const wrap=el('figure',undefined,'comp-figure');
+    const img=el('img');img.src=`/api/compensation/${calibrationId}/run/${run.id}/${kind}`;img.alt=title;
+    wrap.append(img,el('figcaption',title));imgGrid.append(wrap);
+  }
+  target.append(imgGrid);
+  const subGrid=el('div',undefined,'comp-images two');
+  for(const [kind,title] of [['separated-red','分离的红染料通道'],['separated-green','分离的绿染料通道']]){
+    const wrap=el('figure',undefined,'comp-figure');
+    const img=el('img');img.src=`/api/compensation/${calibrationId}/run/${run.id}/${kind}`;img.alt=title;
+    wrap.append(img,el('figcaption',title));subGrid.append(wrap);
+  }
+  target.append(subGrid);
+  const rows=run.particles;
+  const tableWrap=el('div',undefined,'table-wrap');
+  const table=el('table');
+  table.innerHTML='<thead><tr><th>编号</th><th>分类</th><th>状态</th><th>红信号均值</th><th>绿信号均值</th><th>红积分强度</th><th>绿积分强度</th><th>原始红/绿均值</th></tr></thead>';
+  const tbody=el('tbody');
+  for(const row of rows.slice(0,500)){
+    const tr=el('tr');if(row.ambiguous)tr.className='excluded';
+    const tag=el('td',CLASS_LABELS[row.classification]||row.classification);
+    tag.style.color=CLASS_COLORS[row.classification]||'#cfd9df';
+    tr.append(el('td',String(row.id)),tag);
+    tr.append(el('td',row.ambiguous?'⚠ '+row.ambiguous_reasons.join('；'):'可靠'));
+    tr.append(el('td',fmt(row.red_mean)),el('td',fmt(row.green_mean)),el('td',fmt(row.red_integrated)),el('td',fmt(row.green_integrated)));
+    tr.append(el('td',`${fmt(row.raw_red_mean)} / ${fmt(row.raw_green_mean)}`));
+    tbody.append(tr);
+  }
+  table.append(tbody);tableWrap.append(table);target.append(tableWrap);
+  if(rows.length>500)target.append(el('p',`页面显示前500条，共${rows.length}条；完整结果请下载CSV`,'muted'));
+  target.append(el('p',`阳性阈值按背景噪声 3σ 与最低检测限 25 取大者确定；红噪声σ=${fmt(run.noise_std[0])}，绿噪声σ=${fmt(run.noise_std[1])}。饱和像素占比 ${fmt(run.saturated_percent)}%。`,'hint'));
+}

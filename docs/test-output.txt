@@ -1,3 +1,20 @@
+  original_bytes = self.client.get('/api/samples/' + mixed['id'] + '/image/original').data
+  self.client.get('/api/samples/' + mixed['id'] + '/image/original').data,
+  working = self.client.get('/api/samples/' + mixed['id'] + '/image/working').data
+  self.client.get(f"/api/compensation/{cal['id']}/run/{run['id']}/{kind}").status_code,
+  self.client.get(f"/api/compensation/{cal['id']}/run/{run['id']}/{kind}").status_code,
+  self.client.get(f"/api/compensation/{cal['id']}/run/{run['id']}/{kind}").status_code,
+  self.client.get(f"/api/compensation/{cal['id']}/run/{run['id']}/{kind}").status_code,
+  self.client.get(f"/api/compensation/{cal['id']}/run/{run['id']}/{kind}").status_code,
+ok
+test_calibration_recovers_known_spillover (test_compensation.SpilloverCompensation.test_calibration_recovers_known_spillover) ... ok
+test_control_size_mismatch_and_unknown_asset (test_compensation.SpilloverCompensation.test_control_size_mismatch_and_unknown_asset) ... ok
+test_degraded_blank_control_is_flagged_unreliable (test_compensation.SpilloverCompensation.test_degraded_blank_control_is_flagged_unreliable) ... ok
+test_fit_helpers_flag_inversion_and_weak_signal (test_compensation.SpilloverCompensation.test_fit_helpers_flag_inversion_and_weak_signal) ... ok
+test_same_control_is_rejected (test_compensation.SpilloverCompensation.test_same_control_is_rejected) ... ok
+test_saturated_mixed_sample_emits_warning (test_compensation.SpilloverCompensation.test_saturated_mixed_sample_emits_warning) ... ok
+test_size_mismatch_is_rejected_with_clear_message (test_compensation.SpilloverCompensation.test_size_mismatch_is_rejected_with_clear_message) ... ok
+  code = compile(module, "<werkzeug routing>", "exec")
 test_affine_landmarks_recover_translation (test_workflows.Workflows.test_affine_landmarks_recover_translation) ... ok
 test_annotations_recalibrate (test_workflows.Workflows.test_annotations_recalibrate) ... ok
 test_batch_recipe_and_restart_persistence (test_workflows.Workflows.test_batch_recipe_and_restart_persistence) ... ok
@@ -25,6 +42,6 @@ test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_recon
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 33 tests in 36.297s
 
 OK
