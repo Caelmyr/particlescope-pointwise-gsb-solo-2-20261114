@@ -287,10 +287,20 @@ class Store:
             result = []
             for path in directory.glob('*/result.json'):
                 data = self.json_read(path)
-                result.append({k: data.get(k) for k in [
+                entry = {k: data.get(k) for k in [
                     'id', 'created_at', 'count', 'coverage', 'mean_diameter',
-                    'image_revision', 'parameters', 'source',
-                ]})
+                    'image_revision', 'parameters', 'source', 'parent_id',
+                    'total_detected', 'excluded_count',
+                ]}
+                lineage = data.get('lineage')
+                if lineage:
+                    entry['lineage'] = {
+                        'edit_operation': lineage.get('edit_operation'),
+                        'edit_counts': lineage.get('edit_counts'),
+                        'removed_ids': lineage.get('removed_ids'),
+                        'relation_labels': lineage.get('relation_labels'),
+                    }
+                result.append(entry)
             return sorted(result, key=lambda r: r['created_at'], reverse=True)
 
     def annotations(self, sample_id):

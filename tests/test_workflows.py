@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import sys
 import tempfile
 import time
@@ -139,6 +140,200 @@ class Workflows(unittest.TestCase):
         })
         self.assertEqual(changed['count'], 39)
         self.assertEqual(changed['source'], 'mask_edit')
+
+    def test_mask_edit_preserves_identity_and_filter_conclusions(self):
+        sample = self.demo()
+        first = self.analyze(sample, method='otsu')
+        original_ids = [p['id'] for p in first['particles']]
+        filtered = self.request('POST', sample, 'filter', {
+            'revision': self.meta(sample)['revision'], 'exclude_ids': [1, 2],
+        })
+        target = next(p for p in filtered['particles'] if p['id'] == 5)
+        changed = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'remove_object',
+            'point': [target['centroid_x'], target['centroid_y']],
+        })
+        new_ids = sorted(p['id'] for p in changed['particles'])
+        # Untouched objects keep their exact numeric identity.
+        self.assertEqual(new_ids, sorted(i for i in original_ids if i != 5))
+        included = {p['id']: p['included'] for p in changed['particles']}
+        self.assertFalse(included[1])
+        self.assertFalse(included[2])
+        self.assertTrue(included[3])
+        self.assertTrue(included[4])
+        # Manual exclusions remain represented in the inherited filters.
+        self.assertEqual(changed['measurement_filters']['exclude_ids'], [1, 2])
+        relation = next(e for e in changed['lineage']['relations'] if e['relation'] == 'removed')
+        self.assertEqual(relation['old_ids'], [5])
+        self.assertEqual(relation['new_ids'], [])
+        self.assertTrue(all(
+            e['relation'] == 'unchanged' and e['old_ids'] == e['new_ids']
+            for e in changed['lineage']['relations'] if e['relation'] == 'unchanged'
+        ))
+        # Original and filtered analyses remain readable.
+        old = self.client.get('/api/samples/' + sample['id'] + '/result?analysis_id=' + first['id']).json
+        self.assertEqual(old['count'], 40)
+
+    def test_erase_keeps_other_ids_and_records_modified_lineage(self):
+        sample = self.demo()
+        first = self.analyze(sample, method='otsu')
+        target = next(p for p in first['particles'] if p['id'] == 7)
+        cx, cy = int(target['centroid_x']), int(target['centroid_y'])
+        changed = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'erase',
+            'points': [[cx - 3, cy - 3], [cx + 3, cy - 3], [cx + 3, cy + 3], [cx - 3, cy + 3]],
+        })
+        ids = [p['id'] for p in changed['particles']]
+        self.assertNotIn(7, ids)
+        self.assertIn(1, ids)
+        self.assertIn(6, ids)
+        self.assertIn(8, ids)
+        fresh = max(ids)
+        self.assertGreater(fresh, max(p['id'] for p in first['particles']))
+        entry = next(e for e in changed['lineage']['relations'] if e['old_ids'] == [7])
+        self.assertEqual(entry['relation'], 'modified')
+        self.assertEqual(entry['new_ids'], [fresh])
+        row = next(p for p in changed['particles'] if p['id'] == fresh)
+        self.assertEqual(row['lineage_relation'], 'modified')
+        self.assertEqual(row['lineage_parent_ids'], [7])
+        self.assertEqual(row['lineage_origin_ids'], [7])
+
+    def test_merge_and_split_lineage_is_explicit(self):
+        sample = self.demo('touching')
+        first = self.analyze(sample, method='otsu', split_touching=True, seed_distance=20)
+        rows = first['particles']
+        # Find the closest pair so the bridge cannot cross a third object.
+        pair = None
+        best = float('inf')
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                distance = math.hypot(
+                    rows[i]['centroid_x'] - rows[j]['centroid_x'],
+                    rows[i]['centroid_y'] - rows[j]['centroid_y'],
+                )
+                if distance < best:
+                    best, pair = distance, (rows[i], rows[j])
+        a, b = pair
+        merged = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'merge',
+            'points': [[a['centroid_x'], a['centroid_y']], [b['centroid_x'], b['centroid_y']]],
+            'radius': 4,
+        })
+        merge_entries = [e for e in merged['lineage']['relations'] if e['relation'] == 'merged']
+        self.assertTrue(merge_entries)
+        merge_entry = merge_entries[0]
+        self.assertEqual(merge_entry['old_ids'], [a['id'], b['id']])
+        self.assertEqual(len(merge_entry['new_ids']), 1)
+        merged_id = merge_entry['new_ids'][0]
+        untouched_ids = [p['id'] for p in merged['particles'] if p['id'] not in (a['id'], b['id'], merged_id)]
+        self.assertIn(rows[2]['id'], untouched_ids)
+        # Split the merged object again by erasing a separating gap.
+        current = next(p for p in merged['particles'] if p['id'] == merged_id)
+        cx, cy = int(current['centroid_x']), int(current['centroid_y'])
+        split = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'erase',
+            'points': [[cx - 2, cy - 25], [cx + 2, cy - 25], [cx + 2, cy + 25], [cx - 2, cy + 25]],
+        })
+        split_entries = [e for e in split['lineage']['relations'] if e['relation'] == 'split']
+        if split_entries:
+            entry = split_entries[0]
+            self.assertEqual(entry['old_ids'], [merged_id])
+            self.assertEqual(len(entry['new_ids']), 2)
+            for child in entry['new_ids']:
+                chain = split['lineage']['chain'][str(child)]
+                self.assertIn(merged_id, chain['parent_ids'])
+        # Chain always reaches back to original detection ids.
+        for entry in split['lineage']['chain'].values():
+            self.assertTrue(entry['origin_ids'])
+
+    def test_exports_and_overlay_match_lineage_result(self):
+        sample = self.demo()
+        first = self.analyze(sample, method='otsu')
+        target = first['particles'][3]
+        changed = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'remove_object',
+            'point': [target['centroid_x'], target['centroid_y']],
+        })
+        csv_text = self.request('GET', sample, 'export/csv').decode('utf-8-sig')
+        csv_ids = [int(line.split(',')[0]) for line in csv_text.splitlines()[1:]]
+        self.assertEqual(sorted(csv_ids), sorted(p['id'] for p in changed['particles']))
+        self.assertIn('lineage_relation', csv_text.splitlines()[0])
+        exported = self.request('GET', sample, 'export/json')
+        self.assertEqual(exported['id'], changed['id'])
+        self.assertIn('lineage', exported)
+        labels = np.asarray(Image.open(io.BytesIO(self.request('GET', sample, 'export/labels-tiff'))))
+        self.assertEqual(sorted(int(i) for i in np.unique(labels) if i > 0), sorted(csv_ids))
+        for kind in ('overlay', 'mask', 'labels'):
+            response = self.client.get('/api/samples/' + sample['id'] + '/image/' + kind)
+            self.assertEqual(response.status_code, 200)
+            response.close()
+
+    def test_deleted_id_is_never_reused(self):
+        sample = self.demo()
+        first = self.analyze(sample, method='otsu')
+        maximum = max(p['id'] for p in first['particles'])
+        victim = next(p for p in first['particles'] if p['id'] == maximum)
+        second = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'remove_object',
+            'point': [victim['centroid_x'], victim['centroid_y']],
+        })
+        self.assertEqual(second['lineage']['high_water'], maximum)
+        other = second['particles'][0]
+        cx, cy = int(other['centroid_x']), int(other['centroid_y'])
+        third = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'erase',
+            'points': [[cx - 2, cy - 2], [cx + 2, cy - 2], [cx + 2, cy + 2], [cx - 2, cy + 2]],
+        })
+        fresh = max(p['id'] for p in third['particles'])
+        self.assertEqual(fresh, maximum + 1)
+        self.assertNotIn(maximum, [p['id'] for p in third['particles']])
+        self.assertEqual(third['lineage']['high_water'], maximum + 1)
+
+    def test_version_comparison_uses_lineage_matching(self):
+        sample = self.demo()
+        first = self.analyze(sample, method='otsu')
+        target = first['particles'][2]
+        changed = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'remove_object',
+            'point': [target['centroid_x'], target['centroid_y']],
+        })
+        report = self.client.post('/api/compare-versions', json={
+            'sample_id': sample['id'], 'first': first['id'], 'second': changed['id'],
+        }).json
+        matching = report['matching']
+        self.assertIn('血缘', matching['method'])
+        self.assertEqual(matching['removed_ids'], [target['id']])
+        self.assertIn(target['id'], matching['unmatched_first'])
+        self.assertTrue(any(m['first_id'] == 1 and m['second_id'] == 1 for m in matching['matches']))
+
+    def test_lineage_comparison_crosses_filter_versions(self):
+        sample = self.demo()
+        first = self.analyze(sample, method='otsu')
+        self.request('POST', sample, 'filter', {
+            'revision': self.meta(sample)['revision'], 'exclude_ids': [1, 2],
+        })
+        target = next(p for p in first['particles'] if p['id'] == 6)
+        edited = self.request('POST', sample, 'mask', {
+            'revision': self.meta(sample)['revision'], 'operation': 'remove_object',
+            'point': [target['centroid_x'], target['centroid_y']],
+        })
+        report = self.client.post('/api/compare-versions', json={
+            'sample_id': sample['id'], 'first': first['id'], 'second': edited['id'],
+        }).json
+        matching = report['matching']
+        self.assertIn('血缘', matching['method'])
+        self.assertGreaterEqual(matching['lineage_hops'], 1)
+        self.assertEqual(matching['removed_ids'], [6])
+
+    def test_unrelated_analyses_fall_back_to_centroid_matching(self):
+        sample = self.demo()
+        first = self.analyze(sample, method='otsu')
+        second = self.analyze(sample, method='otsu', threshold=100)
+        report = self.client.post('/api/compare-versions', json={
+            'sample_id': sample['id'], 'first': first['id'], 'second': second['id'],
+        }).json
+        self.assertNotIn('血缘', report['matching']['method'])
+
 
     def test_annotations_recalibrate(self):
         sample = self.demo()

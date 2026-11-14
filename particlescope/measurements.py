@@ -220,6 +220,44 @@ def apply_filters(rows, filters):
     return result
 
 
+def carry_or_reapply_filters(rows, filters, previous_rows, preserved_ids):
+    """Keep prior filter conclusions for untouched objects; re-evaluate the rest.
+
+    A local mask revision must not change whether an untouched object is
+    included, so its previous ``included`` flag and exclusion reasons are
+    carried over verbatim. Objects created or altered by the revision are
+    evaluated against the inherited measurement filters from scratch.
+    """
+    previous = {row['id']: row for row in previous_rows}
+    preserved = set(preserved_ids)
+    result = []
+    for source in rows:
+        row = dict(source)
+        old = previous.get(row['id'])
+        if row['id'] in preserved and old is not None:
+            row['included'] = old.get('included', True)
+            row['exclusion_reasons'] = list(old.get('exclusion_reasons', []))
+        else:
+            reasons = []
+            if row['id'] in set(filters.get('exclude_ids', [])):
+                reasons.append('人工排除')
+            for name in ['area', 'diameter', 'circularity', 'aspect_ratio', 'solidity', 'mean_intensity']:
+                lower = filters.get(name + '_min')
+                upper = filters.get(name + '_max')
+                value = row.get(name)
+                if value is None:
+                    reasons.append(name + '缺失')
+                    continue
+                if lower is not None and value < lower:
+                    reasons.append(name + '低于下限')
+                if upper is not None and value > upper:
+                    reasons.append(name + '高于上限')
+            row['included'] = not reasons
+            row['exclusion_reasons'] = reasons
+        result.append(row)
+    return result
+
+
 def included_rows(result):
     return [row for row in result['particles'] if row.get('included', True)]
 

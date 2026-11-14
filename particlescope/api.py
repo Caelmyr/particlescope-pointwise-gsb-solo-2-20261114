@@ -550,7 +550,14 @@ def create_api(store, service, recipes, jobs):
             second = service.require_result(key, data.get('second'))
             first_labels = service.labels(key, first['id'])
             second_labels = service.labels(key, second['id'])
-            return jsonify(compare_analysis_versions(first, second, first_labels, second_labels))
+
+            def ancestor_lookup(analysis_id):
+                return store.result(key, analysis_id)
+
+            return jsonify(compare_analysis_versions(
+                first, second, first_labels, second_labels,
+                ancestor_lookup=ancestor_lookup,
+            ))
 
     @api.post('/group-summary')
     def group():

@@ -111,6 +111,32 @@ def annotation_section(annotations):
     return html_table(['类型', '标签', '测量', '单位'], rows)
 
 
+def lineage_section(result):
+    lineage = result.get('lineage')
+    if not lineage:
+        return '<p>本分析由分割或测量筛选生成，无局部掩膜修订血缘。</p>'
+    labels = lineage.get('relation_labels', {})
+    counts = lineage.get('edit_counts', {})
+    summary = '；'.join(
+        f'{labels.get(key, key)} {value} 个'
+        for key, value in counts.items() if value
+    ) or '本次修订未改变颗粒'
+    rows = []
+    for entry in lineage.get('relations', [])[:200]:
+        rows.append([
+            labels.get(entry['relation'], entry['relation']),
+            ', '.join(str(v) for v in entry.get('old_ids', [])) or '—',
+            ', '.join(str(v) for v in entry.get('new_ids', [])) or '—',
+        ])
+    removed = lineage.get('removed_ids', [])
+    html = '<p>修订类型统计：' + escape(summary) + '</p>'
+    html += html_table(['关系', '原颗粒编号', '新颗粒编号'], rows)
+    if removed:
+        html += '<p>已删除且无后继的编号：' + escape(', '.join(str(v) for v in removed)) + '</p>'
+    html += '<p>未涉及颗粒保留原编号、颜色与筛选结论；新编号只增不复用，可经 parent/origin 链条回溯到原始检测。</p>'
+    return html
+
+
 def build_report(store, service, sample_id):
     with store.lock:
         meta = store.meta(sample_id)
@@ -134,6 +160,7 @@ def build_report(store, service, sample_id):
             '<section><h2>检测叠加</h2><img src="' + overlay_uri + '"></section>',
             '<section><h2>粒径分布</h2><img src="' + chart_uri + '">' + psd_section(statistics) + '</section>',
             '<section><h2>形态与灰度统计</h2>' + measurement_section(result, statistics) + '</section>',
+            '<section><h2>局部修订血缘</h2>' + lineage_section(result) + '</section>',
             '<section><h2>分析参数</h2>' + parameter_section(result) + '</section>',
             '<section><h2>人工测量</h2>' + annotation_section(annotations) + '</section>',
         ]

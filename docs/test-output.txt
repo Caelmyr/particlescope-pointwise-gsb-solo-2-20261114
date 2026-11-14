@@ -6,13 +6,19 @@ test_bright_fluorescence (test_workflows.Workflows.test_bright_fluorescence) ...
 test_calibration_scales_lengths_and_areas (test_workflows.Workflows.test_calibration_scales_lengths_and_areas) ... ok
 test_color_texture_and_profile (test_workflows.Workflows.test_color_texture_and_profile) ... ok
 test_crofton_circle_approximation (test_workflows.Workflows.test_crofton_circle_approximation) ... ok
+test_deleted_id_is_never_reused (test_workflows.Workflows.test_deleted_id_is_never_reused) ... ok
+test_erase_keeps_other_ids_and_records_modified_lineage (test_workflows.Workflows.test_erase_keeps_other_ids_and_records_modified_lineage) ... ok
 test_export_contents_and_report (test_workflows.Workflows.test_export_contents_and_report) ... ok
+test_exports_and_overlay_match_lineage_result (test_workflows.Workflows.test_exports_and_overlay_match_lineage_result) ... ok
 test_filter_preserves_detection_and_history (test_workflows.Workflows.test_filter_preserves_detection_and_history) ... ok
 test_geometry_resets_roi_calibration_annotations (test_workflows.Workflows.test_geometry_resets_roi_calibration_annotations) ... ok
 test_input_validation (test_workflows.Workflows.test_input_validation) ... ok
 test_isolated_ground_truth (test_workflows.Workflows.test_isolated_ground_truth) ... ok
+test_lineage_comparison_crosses_filter_versions (test_workflows.Workflows.test_lineage_comparison_crosses_filter_versions) ... ok
 test_manual_edit_preserves_other_split_instances (test_workflows.Workflows.test_manual_edit_preserves_other_split_instances) ... ok
 test_manual_object_removal (test_workflows.Workflows.test_manual_object_removal) ... ok
+test_mask_edit_preserves_identity_and_filter_conclusions (test_workflows.Workflows.test_mask_edit_preserves_identity_and_filter_conclusions) ... ok
+test_merge_and_split_lineage_is_explicit (test_workflows.Workflows.test_merge_and_split_lineage_is_explicit) ... ok
 test_mosaic_canvas_and_provenance (test_workflows.Workflows.test_mosaic_canvas_and_provenance) ... ok
 test_phase_correlation_recovers_shift (test_workflows.Workflows.test_phase_correlation_recovers_shift) ... ok
 test_preprocessing_invalidates_analysis_and_restore (test_workflows.Workflows.test_preprocessing_invalidates_analysis_and_restore) ... ok
@@ -23,8 +29,10 @@ test_skeleton_preserves_thin_structure (test_workflows.Workflows.test_skeleton_p
 test_spatial_counts_reconcile (test_workflows.Workflows.test_spatial_counts_reconcile) ... ok
 test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_reconcile_counts) ... ok
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
+test_unrelated_analyses_fall_back_to_centroid_matching (test_workflows.Workflows.test_unrelated_analyses_fall_back_to_centroid_matching) ... ok
+test_version_comparison_uses_lineage_matching (test_workflows.Workflows.test_version_comparison_uses_lineage_matching) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 33 tests in 18.463s
 
 OK

@@ -104,6 +104,14 @@ def overlay_image(image, labels, result, style=None):
             label = str(row['id'])
             position = (row['centroid_x'] + 3, row['centroid_y'] + 3)
             draw.text(position, label, font=text_font, fill='white', stroke_width=1, stroke_fill='black')
+            relation = row.get('lineage_relation')
+            if relation and relation != 'unchanged':
+                badge = {'modified': 'M', 'split': 'S', 'merged': 'G', 'created': 'N'}.get(relation)
+                if badge:
+                    draw.text(
+                        (row['centroid_x'] + 3, row['centroid_y'] + 3 + text_font.size + 2),
+                        badge, font=text_font, fill=(255, 211, 84), stroke_width=1, stroke_fill='black',
+                    )
         if style.get('axes', False):
             angle = math.radians(row['orientation'])
             half = row['major_axis'] / result['scale'] / 2

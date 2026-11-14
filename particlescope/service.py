@@ -5,9 +5,63 @@ from PIL import Image
 from . import validation as v
 from .imaging import apply_operation, region_mask, channel_array
 from .segmentation import segment, mask_edit
-from .measurements import measure_labels, summarize, apply_filters
+from .measurements import measure_labels, summarize, apply_filters, carry_or_reapply_filters
 from .rendering import overlay_image, label_image
 from .annotations import recalibrate_annotations
+
+
+LINEAGE_LABELS = {
+    'unchanged': '未涉及',
+    'modified': '局部修改',
+    'split': '拆分',
+    'merged': '合并',
+    'created': '新建',
+    'removed': '删除',
+}
+
+
+def build_lineage(parent_result, relations, command, previous_max, high_water):
+    """Assemble the lineage block of a mask revision.
+
+    ``relations`` describe only the current edit; ``chain`` walks the parent
+    analysis lineage so every particle can be traced back to the original
+    detection across successive local revisions.
+    """
+    parent_lineage = (parent_result or {}).get('lineage') or {}
+    parent_chain = parent_lineage.get('chain', {})
+    new_to_olds = {}
+    new_relations = {}
+    old_to_news = {}
+    for entry in relations:
+        old_ids = [int(value) for value in entry.get('old_ids', [])]
+        new_ids = [int(value) for value in entry.get('new_ids', [])]
+        for old_id in old_ids:
+            old_to_news.setdefault(old_id, set()).update(new_ids)
+        for new_id in new_ids:
+            new_to_olds.setdefault(new_id, set()).update(old_ids)
+            new_relations.setdefault(new_id, set()).add(entry['relation'])
+    chain = {}
+    for new_id, old_ids in new_to_olds.items():
+        origin_ids = []
+        for old_id in sorted(old_ids):
+            origin_ids.extend(parent_chain.get(str(old_id), {}).get('origin_ids', [old_id]))
+        chain[str(new_id)] = {
+            'parent_ids': sorted(old_ids),
+            'relations': sorted(new_relations[new_id]),
+            'origin_ids': sorted(set(origin_ids)),
+        }
+    removed = sorted(old_id for old_id, new_ids in old_to_news.items() if not new_ids)
+    return {
+        'edit_operation': command['operation'],
+        'command': deepcopy(command),
+        'parent_analysis_id': (parent_result or {}).get('id'),
+        'parent_max_id': previous_max,
+        'high_water': high_water,
+        'relation_labels': LINEAGE_LABELS,
+        'relations': deepcopy(relations),
+        'chain': chain,
+        'removed_ids': removed,
+    }
 
 
 class AnalysisService:
@@ -49,8 +103,21 @@ class AnalysisService:
                 expected_revision=meta['revision'],
             )
 
-    def save_analysis(self, sample_id, labels, rows, parameters, details, source, expected_revision=None, parent_id=None, measurement_filters=None):
+    def save_analysis(self, sample_id, labels, rows, parameters, details, source, expected_revision=None, parent_id=None, measurement_filters=None, lineage=None):
         analysis_id = uuid.uuid4().hex
+        if lineage is not None:
+            relation_by_id = {}
+            for entry in lineage['relations']:
+                for new_id in entry.get('new_ids', []):
+                    relation_by_id.setdefault(int(new_id), entry['relation'])
+            chain = lineage.get('chain', {})
+            for row in rows:
+                entry = chain.get(str(row['id']))
+                if entry is None:
+                    continue
+                row['lineage_relation'] = relation_by_id.get(row['id'], 'modified')
+                row['lineage_parent_ids'] = entry['parent_ids']
+                row['lineage_origin_ids'] = entry['origin_ids']
         with self.store.transaction(sample_id, expected_revision) as (sample_path, meta):
             directory = sample_path / 'analyses' / analysis_id
             directory.mkdir()
@@ -70,6 +137,7 @@ class AnalysisService:
                 'source': source,
                 'parent_id': parent_id,
                 'measurement_filters': measurement_filters or {},
+                'lineage': lineage,
                 'particles': rows,
             }
             result.update(summarize(rows, int(selected.sum()), meta['calibration']))
@@ -113,9 +181,34 @@ class AnalysisService:
             labels = self.labels(sample_id)
             image = self.store.working_image(sample_id)
             selected = region_mask(image.size, result['roi'])
-            changed = mask_edit(labels, command, selected)
+            parent_lineage = result.get('lineage') or {}
+            high_water = parent_lineage.get('high_water')
+            changed, edit_lineage = mask_edit(labels, command, selected, high_water)
             gray = channel_array(image, result['parameters']['channel'])
-            rows = measure_labels(changed, gray, meta['calibration'], selected)
+            measured = measure_labels(changed, gray, meta['calibration'], selected)
+            preserved_ids = [
+                entry['new_ids'][0]
+                for entry in edit_lineage['relations']
+                if entry['relation'] == 'unchanged'
+            ]
+            filters = deepcopy(result.get('measurement_filters') or {})
+            # Manual exclusions of objects that survive unchanged stay in force.
+            excluded = set(filters.get('exclude_ids', []))
+            excluded.update(
+                row['id']
+                for row in result['particles']
+                if not row.get('included', True)
+                and '人工排除' in row.get('exclusion_reasons', [])
+                and row['id'] in preserved_ids
+            )
+            if excluded:
+                filters['exclude_ids'] = sorted(excluded)
+            rows = carry_or_reapply_filters(measured, filters, result['particles'], preserved_ids)
+            lineage = build_lineage(
+                result, edit_lineage['relations'], command,
+                edit_lineage['parent_max_id'], edit_lineage['high_water'],
+            )
+            lineage['edit_counts'] = edit_lineage['counts']
             details = dict(result['details'])
             details['manual_command'] = command
             return self.save_analysis(
@@ -127,6 +220,8 @@ class AnalysisService:
                 'mask_edit',
                 expected_revision,
                 result['id'],
+                filters,
+                lineage,
             )
 
     def filter_measurements(self, sample_id, body, expected_revision=None):

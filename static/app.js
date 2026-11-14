@@ -201,7 +201,8 @@ async function finishDrawing(){
   }else if(['add','erase','remove_object','merge'].includes(mode)){
     const data={revision:state.sample.revision,operation:mode,points};
     if(mode==='remove_object')data.point=points[0];
-    await mutate('更新掩膜并重新测量…',()=>post(url('mask'),data));state.view='overlay';
+    const saved=await mutate('更新掩膜并重新测量…',()=>post(url('mask'),data));state.view='overlay';
+    showLineageSummary(saved);
   }else throw Error('请选择绘制工具');
   state.points=[];drawCanvas();showImage();
 }
@@ -212,9 +213,11 @@ function renderRows(){
   $('rows').replaceChildren();if(!state.result){const tr=$('rows').insertRow();const td=tr.insertCell();td.colSpan=8;td.textContent='分析后显示形态、粒径及灰度测量结果';return}
   let rows=state.result.particles.filter(r=>$('rowFilter').value==='all'||($('rowFilter').value==='included'?r.included:!r.included));
   const sort=$('sortField').value;rows=rows.slice().sort((a,b)=>a[sort]-b[sort]);
+  const relationLabels=state.result.lineage?.relation_labels||{};
   for(const row of rows.slice(0,1000)){
     const tr=$('rows').insertRow();if(!row.included)tr.className='excluded';
-    for(const value of [row.id,row.area,row.diameter,row.circularity,row.aspect_ratio,`${fmt(row.major_axis)} / ${fmt(row.minor_axis)}`,`${fmt(row.centroid_x)} / ${fmt(row.centroid_y)}`,row.included?'纳入':'排除'])tr.insertCell().textContent=fmt(value);
+    const relation=row.lineage_relation?` · ${relationLabels[row.lineage_relation]||row.lineage_relation}`:'';
+    for(const value of [String(row.id)+relation,row.area,row.diameter,row.circularity,row.aspect_ratio,`${fmt(row.major_axis)} / ${fmt(row.minor_axis)}`,`${fmt(row.centroid_x)} / ${fmt(row.centroid_y)}`,row.included?'纳入':'排除'])tr.insertCell().textContent=fmt(value);
     tr.onclick=()=>showParticle(row);
   }
   if(rows.length>1000){const tr=$('rows').insertRow();const cell=tr.insertCell();cell.colSpan=8;cell.textContent=`页面显示前1000条，共${rows.length}条；CSV包含全部结果`}
@@ -253,7 +256,7 @@ $('preprocess').onclick=guard(()=>{
   body.append(makeForm(fields,'应用到当前图像',async data=>{const [x,y,width,height]=data.crop_values;data.crop={x,y,width,height};await mutate('正在处理图像…',()=>post(url('enhance'),{...data,revision:state.sample.revision}));$('dialog').close()}));
 });
 $('filterMeasurements').onclick=guard(()=>{
-  requireResult();const body=openDialog('筛选测量结果');body.append(el('p','筛选不会更改原始检测掩膜，会生成新的分析记录；留空即不限制。','hint'));
+  requireResult();const body=openDialog('筛选测量结果');body.append(el('p','筛选不会更改原始检测掩膜，会生成新的分析记录；留空即不限制。之后做局部掩膜修订时，未涉及颗粒的筛选结论（含人工排除）会原样保留。','hint'));
   const form=el('form',undefined,'form');const grid=el('div',undefined,'two');
   for(const [key,title] of [['area','面积'],['diameter','等效直径'],['circularity','圆度'],['aspect_ratio','长宽比'],['solidity','实心度'],['mean_intensity','平均灰度']]){
     for(const suffix of ['min','max']){const def=num(key+'_'+suffix,title+(suffix==='min'?'下限':'上限'),'');grid.append(formField(def,state.result.measurement_filters?.[def.name]??''))}
@@ -267,8 +270,41 @@ $('export').onclick=guard(()=>{
   for(const [kind,title] of [['contours-svg','颗粒轮廓 SVG'],['csv','颗粒测量 CSV'],['json','完整分析 JSON'],['geojson','质心 GeoJSON'],['mask-tiff','二值掩膜 TIFF'],['labels-tiff','实例标签 TIFF'],['bundle','完整分析 ZIP'],['crops','透明颗粒裁片 ZIP'],['annotations','人工测量 CSV'],['chart','粒径分布图 PNG']]){const a=el('a','↓ '+title);a.href=url('export/'+kind);grid.append(a)}
   const report=el('a','打开可打印报告 / 另存PDF');report.href=url('report');report.target='_blank';report.rel='noopener';grid.append(report);body.append(grid,el('p','报告内含标定、分割参数、叠加图、粒径分布和测量说明。','hint'));
 });
+function showLineageSummary(result){
+  const lineage=result.lineage;if(!lineage)return;
+  const labelsMap=lineage.relation_labels||{};
+  const counts=lineage.edit_counts||{};
+  const order=['unchanged','modified','split','merged','created','removed'];
+  const body=openDialog('掩膜修订血缘 · 新旧颗粒关系');
+  body.append(el('p','未涉及颗粒保留原编号与筛选结论；仅受影响颗粒获得新编号，编号只增不复用。旧分析可在“图像与分析历史”回看。','hint'));
+  const summary=order.filter(k=>counts[k]).map(k=>`${labelsMap[k]||k} ${counts[k]} 个`);
+  body.append(el('p',summary.join('；')||'本次修订未改变任何颗粒'));
+  const rows=lineage.relations||[];
+  if(rows.length){
+    const wrap=el('div',undefined,'table-wrap');const table=el('table'),thead=el('thead'),tr=el('tr');
+    ['关系','原颗粒编号','新颗粒编号'].forEach(h=>tr.append(el('th',h)));thead.append(tr);table.append(thead);
+    const tbody=el('tbody');
+    for(const entry of rows.slice(0,500)){
+      const r=el('tr');
+      r.append(el('td',labelsMap[entry.relation]||entry.relation),el('td',(entry.old_ids||[]).join(', ')||'—'),el('td',(entry.new_ids||[]).join(', ')||'—'));
+      tbody.append(r);
+    }
+    table.append(tbody);wrap.append(table);body.append(wrap);
+    if(rows.length>500)body.append(el('p',`仅显示前500条，共${rows.length}条；完整关系见导出 JSON/CSV。`,'muted'));
+  }
+  if(lineage.removed_ids?.length)body.append(el('p',`已删除且无后继的编号：${lineage.removed_ids.join(', ')}`,'muted'));
+}
 function showParticle(row){
-  const body=openDialog('颗粒 #'+row.id);const image=el('img',undefined,'preview');image.src=url(`particle/${row.id}`);body.append(image);renderOutput(row,body);const button=el('button',row.included?'从统计中排除此颗粒':'重新纳入此颗粒');button.onclick=guard(async()=>{const excluded=new Set(state.result.measurement_filters?.exclude_ids||[]);row.included?excluded.add(row.id):excluded.delete(row.id);await mutate('更新颗粒筛选…',()=>post(url('filter'),{...state.result.measurement_filters,exclude_ids:[...excluded],revision:state.sample.revision}));$('dialog').close()});body.append(button);
+  const body=openDialog('颗粒 #'+row.id);const image=el('img',undefined,'preview');image.src=url(`particle/${row.id}`);body.append(image);renderOutput(row,body);
+  const lineage=state.result.lineage;
+  if(lineage && row.lineage_relation){
+    const labelsMap=lineage.relation_labels||{};
+    const parts=[`本次修订：${labelsMap[row.lineage_relation]||row.lineage_relation}`];
+    if(row.lineage_parent_ids?.length)parts.push(`直接来源编号：${row.lineage_parent_ids.join(', ')}`);
+    if(row.lineage_origin_ids?.length)parts.push(`可追溯到原始检测编号：${row.lineage_origin_ids.join(', ')}`);
+    body.append(el('p',parts.join('；'),'hint'));
+  }
+  const button=el('button',row.included?'从统计中排除此颗粒':'重新纳入此颗粒');button.onclick=guard(async()=>{const excluded=new Set(state.result.measurement_filters?.exclude_ids||[]);row.included?excluded.add(row.id):excluded.delete(row.id);await mutate('更新颗粒筛选…',()=>post(url('filter'),{...state.result.measurement_filters,exclude_ids:[...excluded],revision:state.sample.revision}));$('dialog').close()});body.append(button);
 }
 $('annotations').onclick=guard(async()=>{
   requireSample();const data=await request(url('annotations'));const body=openDialog('人工测量与标注');body.append(el('p','使用画布工具选择线段、角度或多边形，点击对应端点即可保存。标注随尺寸标定更新。','hint'));
@@ -280,7 +316,7 @@ $('history').onclick=guard(async()=>{
   body.append(el('h3','图像预处理历史'));const reset=el('button','恢复原始图像（当前图像另存历史）');reset.onclick=guard(async()=>{await mutate('恢复原始图像…',()=>post(url('restore'),{revision:state.sample.revision,version_id:'original'}));$('dialog').close()});body.append(reset);
   for(const entry of history.slice().reverse()){const card=el('div',undefined,'history-card');card.append(el('h3',`${entry.operation} · ${entry.time}`));const button=el('button','恢复到此操作之前');button.onclick=guard(async()=>{await mutate('恢复图像版本…',()=>post(url('restore'),{revision:state.sample.revision,version_id:entry.id}));$('dialog').close()});card.append(button);body.append(card)}
   body.append(el('h3','分析历史（保留参数与结果）'));const selects=[];
-  for(const result of analyses){const card=el('div',undefined,'history-card');card.append(el('h3',`${result.created_at} · ${result.count} 个颗粒 · 图像v${result.image_revision}`));const check=el('input');check.type='checkbox';check.onchange=()=>{check.checked?selects.push(result.id):selects.splice(selects.indexOf(result.id),1)};const l=el('label',' 选择对比');l.prepend(check);card.append(l);const button=el('button','设为当前分析');button.onclick=guard(async()=>{await mutate('切换分析版本…',()=>post(url('analyses/select'),{analysis_id:result.id,revision:state.sample.revision}));state.view='overlay';showImage();$('dialog').close()});card.append(button);body.append(card)}
+  for(const result of analyses){const card=el('div',undefined,'history-card');let title=`${result.created_at} · ${result.count} 个颗粒 · 图像v${result.image_revision}`;if(result.source==='mask_edit'&&result.lineage){const c=result.lineage.edit_counts||{};const lm=result.lineage.relation_labels||{};const bits=Object.entries(c).filter(([,n])=>n).map(([k,n])=>`${lm[k]||k}${n}`);title+=` · 掩膜修订（${bits.join('、')}）`}else if(result.source){title+=` · ${result.source}`}card.append(el('h3',title));const check=el('input');check.type='checkbox';check.onchange=()=>{check.checked?selects.push(result.id):selects.splice(selects.indexOf(result.id),1)};const l=el('label',' 选择对比');l.prepend(check);card.append(l);const button=el('button','设为当前分析');button.onclick=guard(async()=>{await mutate('切换分析版本…',()=>post(url('analyses/select'),{analysis_id:result.id,revision:state.sample.revision}));state.view='overlay';showImage();$('dialog').close()});card.append(button);body.append(card)}
   const compare=el('button','比较勾选的两个分析版本');compare.onclick=guard(async()=>{if(selects.length!==2)throw Error('请勾选两个分析版本');const result=await post('/api/compare-versions',{sample_id:state.sample.id,first:selects[0],second:selects[1]});renderOutput(result,openDialog('分析版本差异'))});body.append(compare);
 });
 function chart(series,title,container,options={}){

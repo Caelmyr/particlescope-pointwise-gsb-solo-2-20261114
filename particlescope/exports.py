@@ -12,7 +12,8 @@ from .statistics import statistics_report
 
 
 CSV_FIELDS = [
-    'id', 'included', 'area_px', 'area', 'diameter', 'perimeter',
+    'id', 'included', 'lineage_relation', 'lineage_parent_ids', 'lineage_origin_ids',
+    'area_px', 'area', 'diameter', 'perimeter',
     'centroid_x', 'centroid_y', 'major_axis', 'minor_axis',
     'feret_max', 'feret_min', 'orientation', 'eccentricity',
     'circularity', 'aspect_ratio', 'solidity', 'extent', 'roughness',

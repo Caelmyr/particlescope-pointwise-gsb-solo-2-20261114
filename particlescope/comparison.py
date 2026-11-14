@@ -117,7 +117,86 @@ def match_particles(first_rows, second_rows, maximum_distance=20):
     }
 
 
-def compare_analysis_versions(first, second, first_labels, second_labels, maximum_distance=20):
+def lineage_matching(first, second, ancestor_lookup=None):
+    """Match particles across versions using recorded mask-edit lineage.
+
+    Handles direct parent/child mask edits and chains where measurement filter
+    versions sit between the two compared analyses. ``ancestor_lookup`` maps an
+    analysis id to its stored result so the parent chain can be walked.
+    Returns None when the analyses are not connected by local mask revisions,
+    so callers can use centroid matching instead.
+    """
+    lineage = second.get('lineage')
+    if not lineage:
+        return None
+    if ancestor_lookup is None:
+        return None
+    # Walk parent links until reaching the first analysis, crossing
+    # filter-only versions (which have parent_id but no lineage of their own).
+    current = second
+    hops = 0
+    while current is not None and current.get('id') != first['id']:
+        parent_id = (current.get('lineage') or {}).get('parent_analysis_id') or current.get('parent_id')
+        if not parent_id or hops > 100:
+            return None
+        current = ancestor_lookup(parent_id)
+        if current is None:
+            return None
+        hops += 1
+    if current.get('id') != first['id']:
+        return None
+    first_rows = {row['id']: row for row in first['particles']}
+    second_rows = {row['id']: row for row in second['particles']}
+    matches, split, merged, created, modified = [], [], [], [], []
+    for new_id, entry in lineage.get('chain', {}).items():
+        new_id = int(new_id)
+        parents = entry['parent_ids']
+        relations = entry['relations']
+        current_row = second_rows.get(new_id)
+        if current_row is None:
+            continue
+        if not parents:
+            created.append(new_id)
+        elif len(parents) > 1:
+            merged.append({'new_id': new_id, 'old_ids': parents})
+        else:
+            old_id = parents[0]
+            previous = first_rows.get(old_id)
+            if previous is None:
+                continue
+            if 'split' in relations:
+                split.append({'old_id': old_id, 'new_id': new_id})
+            elif 'modified' in relations:
+                modified.append(new_id)
+            matches.append({
+                'first_id': old_id,
+                'second_id': new_id,
+                'relation': relations[0],
+                'area_change_percent': scalar((current_row['area_px'] - previous['area_px']) / previous['area_px'] * 100),
+                'diameter_change': scalar(current_row['diameter'] - previous['diameter']),
+            })
+    removed = list(lineage.get('removed_ids', []))
+    unchanged = [
+        entry['new_ids'][0]
+        for entry in lineage.get('relations', [])
+        if entry['relation'] == 'unchanged'
+    ]
+    return {
+        'method': '按掩膜修订血缘匹配（未涉及对象编号保持不变）',
+        'lineage_hops': hops,
+        'matches': matches,
+        'unmatched_first': sorted(removed),
+        'unmatched_second': sorted(created),
+        'unchanged_ids': sorted(unchanged),
+        'modified_ids': sorted(modified),
+        'split': split,
+        'merged': merged,
+        'created_ids': sorted(created),
+        'removed_ids': sorted(removed),
+    }
+
+
+def compare_analysis_versions(first, second, first_labels, second_labels, maximum_distance=20, ancestor_lookup=None):
     if first['image_revision'] != second['image_revision']:
         raise ValidationError('分析版本来自不同图像版本，不能直接像素比较')
     if first_labels.shape != second_labels.shape:
@@ -126,13 +205,15 @@ def compare_analysis_versions(first, second, first_labels, second_labels, maximu
     second_ids = [r['id'] for r in included_rows(second)]
     first_mask = np.isin(first_labels, first_ids) & (first_labels > 0)
     second_mask = np.isin(second_labels, second_ids) & (second_labels > 0)
+    lineage_report = lineage_matching(first, second, ancestor_lookup)
+    matching = lineage_report or match_particles(included_rows(first), included_rows(second), maximum_distance)
     return {
         'first_id': first['id'],
         'second_id': second['id'],
         'count_change': second['count'] - first['count'],
         'coverage_change': scalar(second['coverage'] - first['coverage']),
         'pixel_agreement': evaluate_reference(first_mask, second_mask),
-        'matching': match_particles(included_rows(first), included_rows(second), maximum_distance),
+        'matching': matching,
     }
 
 
