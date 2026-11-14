@@ -1,5 +1,7 @@
 import io
 import json
+import math
+import os
 import sys
 import tempfile
 import time
@@ -12,6 +14,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from particlescope import create_app
+from particlescope.imaging import bilateral
 from particlescope.rendering import png_bytes
 from particlescope.synthetic import generate_sample
 from particlescope.registration import phase_correlation, translate, affine_landmarks
@@ -319,6 +322,63 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+    def test_bilateral_matches_reference_and_keeps_history(self):
+        height, width = 150, 210
+        y, x = np.indices((height, width))
+        field = 120 + 45 * np.sin(x / 13.0) + 30 * np.cos(y / 9.0) + 20 * np.sin((x * y) / 4000.0)
+        rgb = np.stack([field, field * 0.8 + 30, 255 - field * 0.6], axis=2)
+        picture = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8))
+        picture.paste((20, 20, 20), (60, 40, 90, 70))
+        picture.paste((210, 180, 90), (120, 80, 129, 89))
+        for radius, amount in ((1, 0.4), (3, 1.0), (5, 2.0)):
+            reference = self.bilateral_reference(picture, radius, amount)
+            filtered = np.asarray(bilateral(picture, radius, amount), dtype=np.int16)
+            np.testing.assert_array_equal(filtered, reference)
+        sample = self.demo()
+        before = self.request('GET', sample, 'image/working')
+        try:
+            for workers in ('1', '3'):
+                os.environ['PARTICLESCOPE_BILATERAL_WORKERS'] = workers
+                meta = self.request('POST', sample, 'enhance', {
+                    'revision': self.meta(sample)['revision'],
+                    'operation': 'bilateral',
+                    'radius': 3,
+                    'amount': 1,
+                })
+                self.assertNotEqual(before, self.request('GET', sample, 'image/working'))
+                self.assertIsNone(self.request('GET', sample, 'result'))
+                entries = self.request('GET', sample, 'history')
+                self.assertEqual(entries[-1]['operation'], 'bilateral')
+                self.assertEqual(entries[-1]['parameters']['radius'], 3)
+                self.request('POST', sample, 'restore', {
+                    'revision': meta['revision'], 'version_id': 'original',
+                })
+                self.assertEqual(before, self.request('GET', sample, 'image/working'))
+        finally:
+            os.environ.pop('PARTICLESCOPE_BILATERAL_WORKERS', None)
+
+    @staticmethod
+    def bilateral_reference(image, radius, amount):
+        rgb = np.asarray(image, dtype=np.float32)
+        padded = np.pad(rgb, ((radius, radius), (radius, radius), (0, 0)), mode='reflect')
+        output = np.zeros_like(rgb)
+        weight_sum = np.zeros(rgb.shape[:2], dtype=np.float32)
+        spatial_sigma = max(radius / 2, 0.5)
+        color_sigma = max(amount * 20, 1)
+        for oy in range(-radius, radius + 1):
+            for ox in range(-radius, radius + 1):
+                shifted = padded[
+                    radius + oy:radius + oy + rgb.shape[0],
+                    radius + ox:radius + ox + rgb.shape[1],
+                ]
+                distance = np.mean((shifted - rgb) ** 2, axis=2)
+                spatial = math.exp(-(ox * ox + oy * oy) / (2 * spatial_sigma ** 2))
+                weight = spatial * np.exp(-distance / (2 * color_sigma ** 2))
+                output += shifted * weight[:, :, None]
+                weight_sum += weight
+        output /= np.maximum(weight_sum[:, :, None], 1e-9)
+        return np.clip(output, 0, 255).astype(np.uint8)
 
 
 if __name__ == '__main__':

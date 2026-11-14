@@ -1,4 +1,6 @@
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from scipy import ndimage as ndi
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter, ImageDraw
@@ -44,27 +46,116 @@ def median(image, radius):
     return image.filter(ImageFilter.MedianFilter(size))
 
 
-def bilateral(image, radius, amount):
-    rgb = np.asarray(image, dtype=np.float32)
-    radius = min(radius, 5)
-    padded = np.pad(rgb, ((radius, radius), (radius, radius), (0, 0)), mode='reflect')
-    output = np.zeros_like(rgb)
-    weight_sum = np.zeros(rgb.shape[:2], dtype=np.float32)
+def _bilateral_offsets(radius):
     spatial_sigma = max(radius / 2, 0.5)
+    return [
+        (oy, ox, np.float32(math.exp(-(ox * ox + oy * oy) / (2 * spatial_sigma ** 2))))
+        for oy in range(-radius, radius + 1)
+        for ox in range(-radius, radius + 1)
+    ]
+
+
+def _bilateral_stripe(rgb, radius, color_sigma, offsets, y0, y1, out):
+    """Filter rows [y0, y1) using reflected source rows; write into out.
+
+    ``rgb`` is the uint8 source and ``out`` the uint8 result image. Only a
+    narrow band around the stripe is fetched and padded, so peak memory
+    stays proportional to the stripe height rather than the whole image.
+    Weight arithmetic keeps the original float32 operation order (sum of
+    squared channel differences divided by 3, then the negative exponent)
+    so results are unchanged bit for bit.
+    """
+    height, width = rgb.shape[:2]
+    row_start = max(0, y0 - radius)
+    row_stop = min(height, y1 + radius)
+    top = max(0, radius - y0)
+    bottom = max(0, y1 + radius - height)
+    band = rgb[row_start:row_stop]
+    planes = [
+        np.pad(band[:, :, channel], ((top, bottom), (radius, radius)), mode='reflect')
+        .astype(np.float32)
+        for channel in range(3)
+    ]
+    count = y1 - y0
+    center = rgb[y0:y1].astype(np.float32)
+    c0, c1, c2 = center[:, :, 0], center[:, :, 1], center[:, :, 2]
+    squared = np.empty((count, width), dtype=np.float32)
+    scratch = np.empty((count, width), dtype=np.float32)
+    weight = np.empty((count, width), dtype=np.float32)
+    color_sum = np.zeros((count, width), dtype=np.float32)
+    accumulator = np.zeros((count, width, 3), dtype=np.float32)
+    inverse_color = np.float32(-2 * color_sigma ** 2)
+    for oy, ox, spatial in offsets:
+        sy, sx = radius + oy, radius + ox
+        p0 = planes[0][sy:sy + count, sx:sx + width]
+        p1 = planes[1][sy:sy + count, sx:sx + width]
+        p2 = planes[2][sy:sy + count, sx:sx + width]
+        np.subtract(p0, c0, out=scratch)
+        np.multiply(scratch, scratch, out=squared)
+        np.subtract(p1, c1, out=scratch)
+        np.multiply(scratch, scratch, out=scratch)
+        squared += scratch
+        np.subtract(p2, c2, out=scratch)
+        np.multiply(scratch, scratch, out=scratch)
+        squared += scratch
+        np.divide(squared, np.float32(3.0), out=weight)
+        np.divide(weight, inverse_color, out=weight)
+        np.exp(weight, out=weight)
+        weight *= spatial
+        accumulator[:, :, 0] += p0 * weight
+        accumulator[:, :, 1] += p1 * weight
+        accumulator[:, :, 2] += p2 * weight
+        color_sum += weight
+    accumulator /= np.maximum(color_sum[:, :, None], 1e-9)
+    out[y0:y1] = np.clip(accumulator, 0, 255).astype(np.uint8)
+
+
+def bilateral(image, radius, amount):
+    radius = min(radius, 5)
+    if radius < 1:
+        return image.copy()
+    source = np.asarray(image.convert('RGB'), dtype=np.uint8)
+    height, width = source.shape[:2]
     color_sigma = max(amount * 20, 1)
-    for oy in range(-radius, radius + 1):
-        for ox in range(-radius, radius + 1):
-            shifted = padded[
-                radius + oy:radius + oy + rgb.shape[0],
-                radius + ox:radius + ox + rgb.shape[1],
+    offsets = _bilateral_offsets(radius)
+    stripe = _bilateral_stripe_size(height, width)
+    rows = [(y, min(y + stripe, height)) for y in range(0, height, stripe)]
+    output = np.empty((height, width, 3), dtype=np.uint8)
+    workers = min(len(rows), _bilateral_workers())
+    if workers <= 1:
+        for y0, y1 in rows:
+            _bilateral_stripe(source, radius, color_sigma, offsets, y0, y1, output)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    _bilateral_stripe, source, radius, color_sigma, offsets, y0, y1, output
+                )
+                for y0, y1 in rows
             ]
-            distance = np.mean((shifted - rgb) ** 2, axis=2)
-            spatial = math.exp(-(ox * ox + oy * oy) / (2 * spatial_sigma ** 2))
-            weight = spatial * np.exp(-distance / (2 * color_sigma ** 2))
-            output += shifted * weight[:, :, None]
-            weight_sum += weight
-    output /= np.maximum(weight_sum[:, :, None], 1e-9)
-    return byte_image(output)
+            for future in futures:
+                future.result()
+    return Image.fromarray(output)
+
+
+def _bilateral_workers():
+    override = os.environ.get('PARTICLESCOPE_BILATERAL_WORKERS')
+    if override:
+        try:
+            value = int(override)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return max(1, min(4, os.cpu_count() or 1))
+
+
+def _bilateral_stripe_size(height, width):
+    # Bound each band to roughly 128k pixels (about 64 rows on a 2 MP wide
+    # image) so per-band temporaries stay cache-resident and the reflected
+    # source padding stays small even when radius is at its maximum.
+    rows = max(16, min(256, 131072 // max(width, 1)))
+    return int(min(height, rows))
 
 
 def background_correct(image, radius, amount):

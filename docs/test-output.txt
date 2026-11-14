@@ -1,12 +1,15 @@
 test_affine_landmarks_recover_translation (test_workflows.Workflows.test_affine_landmarks_recover_translation) ... ok
 test_annotations_recalibrate (test_workflows.Workflows.test_annotations_recalibrate) ... ok
 test_batch_recipe_and_restart_persistence (test_workflows.Workflows.test_batch_recipe_and_restart_persistence) ... ok
+test_bilateral_matches_reference_and_keeps_history (test_workflows.Workflows.test_bilateral_matches_reference_and_keeps_history) ... ok
 test_boundary_and_block_uncertainty (test_workflows.Workflows.test_boundary_and_block_uncertainty) ... ok
 test_bright_fluorescence (test_workflows.Workflows.test_bright_fluorescence) ... ok
 test_calibration_scales_lengths_and_areas (test_workflows.Workflows.test_calibration_scales_lengths_and_areas) ... ok
 test_color_texture_and_profile (test_workflows.Workflows.test_color_texture_and_profile) ... ok
 test_crofton_circle_approximation (test_workflows.Workflows.test_crofton_circle_approximation) ... ok
-test_export_contents_and_report (test_workflows.Workflows.test_export_contents_and_report) ... ok
+test_export_contents_and_report (test_workflows.Workflows.test_export_contents_and_report) ... /workspace/particlescope/exports.py:107: DeprecationWarning: 'mode' parameter is deprecated and will be removed in Pillow 13 (2026-10-15)
+  image = Image.fromarray(labels.astype(np.int32), mode='I')
+ok
 test_filter_preserves_detection_and_history (test_workflows.Workflows.test_filter_preserves_detection_and_history) ... ok
 test_geometry_resets_roi_calibration_annotations (test_workflows.Workflows.test_geometry_resets_roi_calibration_annotations) ... ok
 test_input_validation (test_workflows.Workflows.test_input_validation) ... ok
@@ -25,6 +28,6 @@ test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_recon
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 26 tests in 13.865s
 
 OK
