@@ -15,7 +15,14 @@ from particlescope import create_app
 from particlescope.rendering import png_bytes
 from particlescope.synthetic import generate_sample
 from particlescope.registration import phase_correlation, translate, affine_landmarks
-from particlescope.segmentation import evaluate_reference
+from particlescope.segmentation import (
+    evaluate_reference,
+    threshold_sweep,
+    clean_binary,
+    label_binary,
+    filter_labels,
+)
+from particlescope.imaging import channel_array, region_mask
 from particlescope.measurements import crofton_perimeter
 from particlescope.morphology import skeletonize
 
@@ -319,6 +326,175 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+    @staticmethod
+    def _sweep_parameters(**overrides):
+        params = {
+            'method': 'manual', 'threshold': 120, 'channel': 'gray',
+            'polarity': 'dark', 'percentile': 25, 'sigma': 1,
+            'adaptive_window': 41, 'adaptive_offset': 10,
+            'min_area': 40, 'max_area': 16000000, 'opening': 0,
+            'closing': 0, 'fill_holes': True, 'exclude_edge': True,
+            'split_touching': False, 'seed_distance': 12, 'connectivity': 8,
+        }
+        params.update(overrides)
+        return params
+
+    @staticmethod
+    def _reference_sweep(image, parameters, region, thresholds):
+        """逐阈值独立分析，作为共享计算扫描的参照实现。"""
+        selected = region_mask(image.size, region)
+        gray = channel_array(image, parameters['channel'])
+        if parameters['sigma']:
+            gray = ndi.gaussian_filter(gray, parameters['sigma'])
+        rows = []
+        for value in thresholds:
+            if parameters['polarity'] == 'dark':
+                binary = gray <= value
+            else:
+                binary = gray > value
+            binary &= selected
+            cleaned = clean_binary(binary, parameters, selected)
+            labels, _ = label_binary(cleaned, parameters)
+            filtered, details = filter_labels(labels, parameters, selected)
+            count = details['accepted_components']
+            foreground = int(np.count_nonzero(filtered))
+            rows.append({
+                'threshold': float(value),
+                'count': count,
+                'coverage': round(foreground / max(int(selected.sum()), 1) * 100, 4),
+                'foreground_pixels': foreground,
+                'mean_area_px': round(foreground / count, 4) if count else 0,
+            })
+        return rows
+
+    def test_sweep_matches_per_threshold_analysis_for_every_cleanup_option(self):
+        # 穷尽组合放在小图单元测试上，覆盖全部平滑/开闭/填孔/连通/边缘组合；
+        # 与逐阈值独立分析（参照实现）逐字段比对，保证共享计算不改变语义。
+        rng = np.random.RandomState(23)
+        image = Image.fromarray(rng.randint(0, 256, (96, 128, 3), dtype=np.uint8))
+        thresholds = np.linspace(20, 240, 9)
+        regions = [
+            {'type': 'full'},
+            {'type': 'rectangle', 'x': 8, 'y': 6, 'width': 100, 'height': 80},
+            {'type': 'polygon', 'points': [[10, 10], [118, 14], [110, 88],
+                                            [20, 84], [8, 48]]},
+        ]
+        cases = 0
+        for polarity in ('dark', 'light'):
+            for channel in ('gray', 'red', 'blue'):
+                for sigma in (0, 1.5):
+                    for opening in (0, 2):
+                        for closing in (0, 2):
+                            for fill_holes in (True, False):
+                                for connectivity in (4, 8):
+                                    for exclude_edge in (True, False):
+                                        params = self._sweep_parameters(
+                                            polarity=polarity, channel=channel,
+                                            sigma=sigma, opening=opening,
+                                            closing=closing,
+                                            fill_holes=fill_holes,
+                                            connectivity=connectivity,
+                                            exclude_edge=exclude_edge)
+                                        for region in regions:
+                                            got = threshold_sweep(image, params, region, thresholds)
+                                            want = self._reference_sweep(image, params, region, thresholds)
+                                            self.assertEqual(got, want)
+                                            cases += 1
+        self.assertGreater(cases, 200)
+
+    def test_sweep_on_demo_image_matches_reference_across_polarities_and_rois(self):
+        sample = self.demo()
+        image = self.app.extensions['analysis'].store.working_image(sample['id'])
+        thresholds = np.linspace(40, 220, 11)
+        regions = [
+            {'type': 'full'},
+            {'type': 'rectangle', 'x': 20, 'y': 20, 'width': 400, 'height': 500},
+            {'type': 'polygon', 'points': [[40, 40], [500, 60], [480, 560],
+                                            [80, 540], [30, 300]]},
+        ]
+        for polarity in ('dark', 'light'):
+            for opening, closing, fill in ((0, 0, True), (2, 2, True), (1, 0, False)):
+                params = self._sweep_parameters(polarity=polarity, opening=opening,
+                                                closing=closing, fill_holes=fill)
+                for region in regions:
+                    got = threshold_sweep(image, params, region, thresholds)
+                    want = self._reference_sweep(image, params, region, thresholds)
+                    self.assertEqual(got, want)
+
+    def test_sweep_area_filtering_and_empty_threshold_match_reference(self):
+        sample = self.demo()
+        image = self.app.extensions['analysis'].store.working_image(sample['id'])
+        thresholds = np.linspace(0, 255, 13)
+        for min_area, max_area in ((1, 30), (300, 100000), (100000, 16000000)):
+            params = self._sweep_parameters(polarity='light', min_area=min_area,
+                                            max_area=max_area, opening=1)
+            got = threshold_sweep(image, params, {'type': 'full'}, thresholds)
+            want = self._reference_sweep(image, params, {'type': 'full'}, thresholds)
+            self.assertEqual(got, want)
+        self.assertTrue(any(row['count'] == 0 and row['foreground_pixels'] == 0
+                            and row['mean_area_px'] == 0 for row in got))
+
+    def test_sweep_with_touching_separation_keeps_independent_pipeline(self):
+        sample = self.demo('touching')
+        image = self.app.extensions['analysis'].store.working_image(sample['id'])
+        thresholds = np.linspace(50, 220, 7)
+        params = self._sweep_parameters(split_touching=True, seed_distance=20,
+                                        opening=1, fill_holes=True)
+        got = threshold_sweep(image, params, {'type': 'full'}, thresholds)
+        want = self._reference_sweep(image, params, {'type': 'full'}, thresholds)
+        self.assertEqual(got, want)
+
+    def test_sweep_does_not_reuse_results_across_channel_or_roi(self):
+        sample = self.demo()
+        store = self.app.extensions['analysis'].store
+        image = store.working_image(sample['id'])
+        thresholds = np.linspace(40, 220, 9)
+        gray_params = self._sweep_parameters(channel='gray')
+        red_params = self._sweep_parameters(channel='red')
+        full = {'type': 'full'}
+        roi = {'type': 'rectangle', 'x': 30, 'y': 30, 'width': 420, 'height': 520}
+        gray_full = threshold_sweep(image, gray_params, full, thresholds)
+        red_full = threshold_sweep(image, red_params, full, thresholds)
+        gray_roi = threshold_sweep(image, gray_params, roi, thresholds)
+        self.assertNotEqual(gray_full, red_full)
+        self.assertNotEqual(gray_full, gray_roi)
+        # 同输入重复调用仍稳定一致，说明缓存状态没有跨调用泄漏
+        self.assertEqual(gray_full, threshold_sweep(image, gray_params, full, thresholds))
+        self.assertEqual(red_full, threshold_sweep(image, red_params, full, thresholds))
+        self.assertEqual(gray_roi, threshold_sweep(image, gray_params, roi, thresholds))
+
+    def test_sweep_endpoint_does_not_change_current_analysis(self):
+        sample = self.demo()
+        before = self.analyze(sample, method='otsu')
+        meta_before = self.meta(sample)
+        response = self.client.post('/api/samples/' + sample['id'] + '/sweep', json={
+            'start': 40, 'stop': 220, 'steps': 10,
+            'parameters': {'polarity': 'dark', 'opening': 2, 'fill_holes': True},
+        })
+        self.assertEqual(response.status_code, 200, response.json)
+        sweep = response.json
+        self.assertEqual(len(sweep), 10)
+        self.assertEqual(meta_before['revision'], self.meta(sample)['revision'])
+        current = self.request('GET', sample, 'result')
+        self.assertEqual(current['id'], before['id'])
+        self.assertEqual(current['count'], before['count'])
+
+    def test_sweep_shared_pipeline_is_faster_than_repeated_analysis(self):
+        sample = self.demo()
+        store = self.app.extensions['analysis'].store
+        image = store.working_image(sample['id'])
+        region = {'type': 'full'}
+        thresholds = np.linspace(40, 220, 15)
+        params = self._sweep_parameters(opening=2, fill_holes=True)
+        repeated_start = time.perf_counter()
+        repeated = self._reference_sweep(image, params, region, thresholds)
+        repeated_elapsed = time.perf_counter() - repeated_start
+        shared_start = time.perf_counter()
+        shared = threshold_sweep(image, params, region, thresholds)
+        shared_elapsed = time.perf_counter() - shared_start
+        self.assertEqual(shared, repeated)
+        self.assertLess(shared_elapsed, repeated_elapsed)
 
 
 if __name__ == '__main__':

@@ -5,6 +5,85 @@ from .imaging import channel_array, disk, region_mask
 from .validation import ValidationError
 
 
+# 与 ndi.binary_fill_holes 默认结构元素一致的 4-连通十字
+_FILL_STRUCTURE = ndi.generate_binary_structure(2, 1)
+
+
+def _sweep_level_array(gray, selected, parameters):
+    """把与阈值无关的开/闭运算和填孔合并为一次灰度形态学级联。
+
+    对每个阈值 v，返回的 level 满足：
+        亮极性 clean_binary(gray > v) == (level > v) & selected
+        暗极性 clean_binary(gray <= v) == (level <= v) & selected
+    灰度形态学是二值形态学对所有阈值集的提升，
+    灰度孔洞重建与二值填孔逐层对应，因此结果与逐阈值调用完全一致。
+    ROI 外的哨兵值和边界常量保证 ROI 边界外不会被当作孔洞填充。
+    """
+    from skimage.morphology import reconstruction
+    light = parameters['polarity'] == 'light'
+    infinite = np.float32(np.inf)
+    sentinel = -infinite if light else infinite
+    level = np.where(selected, gray, sentinel)
+    if parameters['opening']:
+        structure = disk(parameters['opening'])
+        if light:
+            level = ndi.grey_erosion(level, footprint=structure,
+                                     mode='constant', cval=-infinite)
+            level = ndi.grey_dilation(level, footprint=structure,
+                                      mode='constant', cval=-infinite)
+        else:
+            level = ndi.grey_dilation(level, footprint=structure,
+                                      mode='constant', cval=infinite)
+            level = ndi.grey_erosion(level, footprint=structure,
+                                     mode='constant', cval=infinite)
+    if parameters['closing']:
+        structure = disk(parameters['closing'])
+        if light:
+            level = ndi.grey_dilation(level, footprint=structure,
+                                      mode='constant', cval=-infinite)
+            level = ndi.grey_erosion(level, footprint=structure,
+                                     mode='constant', cval=-infinite)
+        else:
+            level = ndi.grey_erosion(level, footprint=structure,
+                                     mode='constant', cval=infinite)
+            level = ndi.grey_dilation(level, footprint=structure,
+                                      mode='constant', cval=infinite)
+    if parameters['fill_holes']:
+        if light:
+            marker = np.full_like(level, infinite)
+            marker[0, :] = level[0, :]
+            marker[-1, :] = level[-1, :]
+            marker[:, 0] = level[:, 0]
+            marker[:, -1] = level[:, -1]
+            level = reconstruction(marker, level, method='erosion',
+                                   footprint=_FILL_STRUCTURE)
+        else:
+            marker = np.full_like(level, -infinite)
+            marker[0, :] = level[0, :]
+            marker[-1, :] = level[-1, :]
+            marker[:, 0] = level[:, 0]
+            marker[:, -1] = level[:, -1]
+            level = reconstruction(marker, level, method='dilation',
+                                   footprint=_FILL_STRUCTURE)
+    return level
+
+
+def _sweep_filter_summary(labels, parameters, boundary):
+    """只统计扫描需要的颗粒数和前景像素，不做全图重编号。
+
+    接受/拒绝判定与 filter_labels 相同：面积区间一致，
+    边缘集合来自同一张分析区域边界，结果计数和像素数完全一致。
+    """
+    counts = np.bincount(labels.ravel())
+    keep = (counts >= parameters['min_area']) & (counts <= parameters['max_area'])
+    keep[0] = False
+    if parameters['exclude_edge']:
+        edge_ids = np.unique(labels[boundary])
+        keep[edge_ids[edge_ids > 0]] = False
+    accepted = np.flatnonzero(keep)
+    return int(len(accepted)), int(counts[accepted].sum())
+
+
 def otsu_threshold(values):
     hist = np.bincount(np.clip(values, 0, 255).astype(np.uint8).ravel(), minlength=256).astype(float)
     total = hist.sum()
@@ -205,22 +284,47 @@ def threshold_sweep(image, parameters, region, thresholds):
     gray = channel_array(image, parameters['channel'])
     if parameters['sigma']:
         gray = ndi.gaussian_filter(gray, parameters['sigma'])
-    result = []
-    for value in thresholds:
-        if parameters['polarity'] == 'dark':
-            binary = gray <= value
-        else:
-            binary = gray > value
-        binary &= selected
-        cleaned = clean_binary(binary, parameters, selected)
-        labels, _ = label_binary(cleaned, parameters)
-        filtered, details = filter_labels(labels, parameters, selected)
+    dark = parameters['polarity'] == 'dark'
+    roi_pixels = max(int(selected.sum()), 1)
+
+    def summarize(value, labels, details):
         count = details['accepted_components']
-        foreground = int(np.count_nonzero(filtered))
+        foreground = int(np.count_nonzero(labels))
+        return {
+            'threshold': float(value),
+            'count': count,
+            'coverage': round(foreground / roi_pixels * 100, 4),
+            'foreground_pixels': foreground,
+            'mean_area_px': round(foreground / count, 4) if count else 0,
+        }
+
+    result = []
+    if parameters['split_touching']:
+        # 分水岭依赖每个阈值下的距离场和种子，无法跨阈值共享，保持逐阈值完整流程
+        for value in thresholds:
+            binary = (gray <= value) if dark else (gray > value)
+            binary &= selected
+            cleaned = clean_binary(binary, parameters, selected)
+            labels, _ = label_binary(cleaned, parameters)
+            filtered, details = filter_labels(labels, parameters, selected)
+            result.append(summarize(value, filtered, details))
+        return result
+
+    # 不分离粘连：平滑只做一次；开/闭/填孔合并为一次灰度形态学级联；
+    # 区域边界只计算一次；每个阈值只做二值化、连通标记和计数筛选。
+    level = _sweep_level_array(gray, selected, parameters)
+    structure = ndi.generate_binary_structure(
+        2, 2 if parameters['connectivity'] == 8 else 1)
+    boundary = selected & ~ndi.binary_erosion(selected, border_value=0)
+    for value in thresholds:
+        binary = ((level <= value) if dark else (level > value)) & selected
+        labels, _ = ndi.label(binary, structure)
+        labels = labels.astype(np.int32)
+        count, foreground = _sweep_filter_summary(labels, parameters, boundary)
         result.append({
             'threshold': float(value),
             'count': count,
-            'coverage': round(foreground / max(int(selected.sum()), 1) * 100, 4),
+            'coverage': round(foreground / roi_pixels * 100, 4),
             'foreground_pixels': foreground,
             'mean_area_px': round(foreground / count, 4) if count else 0,
         })
