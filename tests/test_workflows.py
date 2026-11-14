@@ -8,14 +8,14 @@ import zipfile
 from pathlib import Path
 import numpy as np
 from scipy import ndimage as ndi
-from PIL import Image
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from particlescope import create_app
 from particlescope.rendering import png_bytes
 from particlescope.synthetic import generate_sample
 from particlescope.registration import phase_correlation, translate, affine_landmarks
-from particlescope.segmentation import evaluate_reference
+from particlescope.segmentation import evaluate_reference, split_regions
 from particlescope.measurements import crofton_perimeter
 from particlescope.morphology import skeletonize
 
@@ -107,6 +107,59 @@ class Workflows(unittest.TestCase):
             'point': [int(x[len(x) // 2]), int(y[len(y) // 2])],
         })
         self.assertEqual(changed['count'], 23)
+
+    def test_split_ignores_unrelated_neighbors(self):
+        counts = []
+        for bx in (65, 67, 70, 75):
+            image = Image.new('1', (260, 140), 0)
+            draw = ImageDraw.Draw(image)
+            for cx, cy, r in [(40, 60, 6), (50, 60, 6), (bx, 60, 7)]:
+                draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=1)
+            mask = np.asarray(image, dtype=bool)
+            components, n = ndi.label(mask, np.ones((3, 3)))
+            self.assertEqual(n, 2)
+            labels, _ = split_regions(mask, 15)
+            per_component = sorted(len(np.unique(labels[components == c])) for c in range(1, n + 1))
+            counts.append(per_component)
+            self.assertTrue(np.array_equal(labels > 0, mask))
+        self.assertEqual(counts, [[1, 2]] * 4)
+
+    def test_split_diagonal_plateau_single_seed(self):
+        image = Image.new('1', (120, 120), 0)
+        draw = ImageDraw.Draw(image)
+        draw.line((15, 15, 104, 104), fill=1, width=9)
+        mask = np.asarray(image, dtype=bool)
+        labels, info = split_regions(mask, 12)
+        self.assertEqual(info['seed_count'], 1)
+        self.assertEqual(len(np.unique(labels)) - 1, 1)
+        self.assertTrue(np.array_equal(labels > 0, mask))
+
+    def test_split_curved_neck_stable_with_moving_neighbor(self):
+        y, x = np.indices((160, 300))
+        r = np.hypot(y - 80, x - 80)
+        angle = np.degrees(np.arctan2(y - 80, x - 80))
+        arc = (r >= 41) & (r <= 48) & (angle >= -60) & (angle <= 120)
+        counts = []
+        for ox in (None, 132, 140, 150, 180):
+            mask = arc.copy()
+            if ox is not None:
+                mask[65:97, ox:ox + 32] = True
+            components, n = ndi.label(mask, np.ones((3, 3)))
+            labels, _ = split_regions(mask, 20)
+            arc_component = components[arc][0]
+            counts.append(len(np.unique(labels[components == arc_component])))
+            self.assertTrue(np.array_equal(labels > 0, mask))
+        self.assertEqual(len(set(counts)), 1)
+
+    def test_split_instances_measurements_and_coverage_reconcile(self):
+        sample = self.demo('touching')
+        result = self.analyze(sample, method='otsu', split_touching=True, seed_distance=20)
+        labels = self.app.extensions['analysis'].labels(sample['id'])
+        self.assertEqual(int(labels.max()), result['count'])
+        self.assertEqual(len(result['particles']), result['count'])
+        foreground = int(np.count_nonzero(labels))
+        self.assertEqual(sum(p['area_px'] for p in result['particles']), foreground)
+        self.assertAlmostEqual(result['coverage'], foreground / result['analyzed_area'] * 100, places=4)
 
     def test_bright_fluorescence(self):
         sample = self.demo('fluorescence')

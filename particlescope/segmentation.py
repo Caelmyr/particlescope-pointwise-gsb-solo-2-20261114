@@ -74,33 +74,40 @@ def split_regions(binary, seed_distance):
     distance = ndi.distance_transform_edt(binary)
     if not np.any(distance):
         return np.zeros(binary.shape, dtype=np.int32), {'seed_count': 0, 'split': True}
-    smooth = ndi.gaussian_filter(distance, 1)
-    maximum = ndi.maximum_filter(smooth, size=seed_distance * 2 + 1, mode='constant')
-    maxima = (smooth >= maximum - 1e-7) & binary & (distance >= 1)
-    maxima_labels, n = ndi.label(maxima)
+    structure = np.ones((3, 3))
+    components, component_count = ndi.label(binary, structure)
+    window = seed_distance * 2 + 1
     seeds = np.zeros(binary.shape, dtype=np.int32)
     seed_index = 0
-    for region in ndi.find_objects(maxima_labels):
-        if region is None:
-            continue
-        area = maxima_labels[region] > 0
-        scores = np.where(area, distance[region], -1)
-        local_y, local_x = np.unravel_index(np.argmax(scores), scores.shape)
-        seed_index += 1
-        seeds[region[0].start + local_y, region[1].start + local_x] = seed_index
-    components, component_count = ndi.label(binary)
     for label, region in enumerate(ndi.find_objects(components), 1):
         if region is None:
             continue
         component = components[region] == label
-        if np.any(seeds[region][component]):
-            continue
-        scores = np.where(component, distance[region], -1)
-        y, x = np.unravel_index(np.argmax(scores), scores.shape)
-        seed_index += 1
-        seeds[region[0].start + y, region[1].start + x] = seed_index
-    if seed_index > 20000:
-        raise ValidationError('分离种子超过20000，请增大种子间距或最小面积')
+        local_distance = np.where(component, distance[region], 0.0)
+        smooth = ndi.gaussian_filter(local_distance, 1, mode='constant')
+        maximum = ndi.maximum_filter(smooth, size=window, mode='constant')
+        maxima = (smooth >= maximum - 1e-7) & component & (local_distance >= 1)
+        maxima_labels, _ = ndi.label(maxima, structure)
+        found = False
+        for peak in ndi.find_objects(maxima_labels):
+            if peak is None:
+                continue
+            area = maxima_labels[peak] > 0
+            scores = np.where(area, local_distance[peak], -1)
+            local_y, local_x = np.unravel_index(np.argmax(scores), scores.shape)
+            seed_index += 1
+            seeds[
+                region[0].start + peak[0].start + local_y,
+                region[1].start + peak[1].start + local_x,
+            ] = seed_index
+            found = True
+        if not found:
+            scores = np.where(component, local_distance, -1)
+            y, x = np.unravel_index(np.argmax(scores), scores.shape)
+            seed_index += 1
+            seeds[region[0].start + y, region[1].start + x] = seed_index
+        if seed_index > 20000:
+            raise ValidationError('分离种子超过20000，请增大种子间距或最小面积')
     from skimage.segmentation import watershed
     flooded = watershed(
         -distance,
