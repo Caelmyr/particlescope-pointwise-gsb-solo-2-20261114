@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 import numpy as np
 from scipy import ndimage as ndi
-from PIL import Image
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from particlescope import create_app
@@ -319,6 +319,258 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+
+class TrackingWorkflows(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.app = create_app(cls.temp.name)
+        cls.app.testing = True
+        cls.client = cls.app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.extensions['jobs'].executor.shutdown(wait=True)
+        cls.temp.cleanup()
+
+    def import_frame(self, positions, size=(420, 320), analyze=True):
+        image = Image.new('RGB', size, (228, 233, 232))
+        draw = ImageDraw.Draw(image)
+        for x, y in positions:
+            r = 9
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=(45, 60, 70))
+        stream = io.BytesIO()
+        image.save(stream, 'PNG')
+        stream.seek(0)
+        response = self.client.post('/api/samples', data={'files': (stream, 'frame.png')}, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 201, response.json)
+        sample = response.json['imported'][0]
+        if analyze:
+            revision = self.client.get('/api/samples/' + sample['id']).json['meta']['revision']
+            analysis = self.client.post('/api/samples/' + sample['id'] + '/analyze', json={
+                'revision': revision, 'method': 'manual', 'threshold': 120,
+                'min_area': 20, 'exclude_edge': False,
+            })
+            self.assertEqual(analysis.status_code, 200, analysis.json)
+        return sample
+
+    def make_sequence(self, frames_positions, expected=201, **kwargs):
+        samples = [self.import_frame(p) for p in frames_positions]
+        payload = {
+            'name': '测试时序',
+            'sample_ids': [s['id'] for s in samples],
+            'interval': 1,
+            'interval_unit': 'frame',
+        }
+        payload.update(kwargs)
+        response = self.client.post('/api/sequences', json=payload)
+        self.assertEqual(response.status_code, expected, response.json)
+        return samples, response.json
+
+    def sequence(self, sid):
+        response = self.client.get('/api/sequences/' + sid)
+        self.assertEqual(response.status_code, 200, response.json)
+        return response.json
+
+    def mutate(self, method, sid, path, data):
+        response = self.client.open(f'/api/sequences/{sid}/{path}', method=method, json=data)
+        self.assertEqual(response.status_code, 200, response.json)
+        return response.json
+
+    def test_tracking_basic_trajectory_and_velocity(self):
+        frames = [
+            [(60, 60), (200, 100), (350, 250)],
+            [(70, 60), (208, 105), (340, 250)],
+            [(80, 60), (216, 110), (330, 250)],
+            [(90, 60), (224, 115), (320, 250)],
+        ]
+        samples, sequence = self.make_sequence(frames, interval=2, interval_unit='min')
+        self.assertEqual(sequence['summary']['track_count'], 3)
+        self.assertEqual(sequence['summary']['complete_tracks'], 3)
+        self.assertEqual(sequence['summary']['pending_count'], 0)
+        self.assertEqual(sequence['velocity_unit'], 'px/min')
+        tracks = {t['id']: t for t in sequence['tracks']}
+        self.assertEqual(set(tracks), {'T1', 'T2', 'T3'})
+        first = tracks['T1']
+        self.assertEqual(first['point_count'], 4)
+        self.assertEqual(first['gap_count'], 0)
+        self.assertAlmostEqual(first['mean_speed'], 5.0, places=4)
+        self.assertAlmostEqual(first['points'][0]['speed'], 5.0, places=4)
+        self.assertAlmostEqual(first['net_displacement'], 30.0, places=4)
+        second = tracks['T2']
+        self.assertAlmostEqual(second['mean_speed'], (8 ** 2 + 5 ** 2) ** 0.5 / 2, places=4)
+        self.assertEqual(len(sequence['links']), 9)
+        sid = sequence['id']
+        picked = self.client.get(f'/api/sequences/{sid}/pick?frame=0&x=60&y=60')
+        self.assertEqual(picked.status_code, 200)
+        self.assertEqual(picked.json['id'], 1)
+        self.assertTrue(picked.json['included'])
+        overlay = self.client.get(f'/api/sequences/{sid}/overlay/2')
+        self.assertEqual(overlay.status_code, 200)
+        self.assertTrue(overlay.data.startswith(b'\x89PNG'))
+        focused = self.client.get(f'/api/sequences/{sid}/overlay/2?track=T1')
+        self.assertEqual(focused.status_code, 200)
+        csv_data = self.client.get(f'/api/sequences/{sid}/export/tracks.csv').data.decode('utf-8-sig')
+        lines = csv_data.strip().splitlines()
+        self.assertEqual(len(lines), 13)
+        self.assertIn('track_id', lines[0])
+        duplicate = self.client.post(f'/api/sequences/{sid}/links', json={
+            'revision': sequence['revision'], 'from_frame': 0, 'from_id': 1, 'to_frame': 1, 'to_id': 1,
+        })
+        self.assertEqual(duplicate.status_code, 409)
+
+    def test_tracking_crossing_requires_confirmation(self):
+        frames = [
+            [(60, 100), (60, 200)],
+            [(85, 140), (85, 160)],
+            [(110, 170), (110, 130)],
+        ]
+        _, sequence = self.make_sequence(frames, settings={'max_distance': 60})
+        sid = sequence['id']
+        self.assertEqual(len([l for l in sequence['links'] if l['from_frame'] == 0]), 2)
+        self.assertEqual(len([l for l in sequence['links'] if l['from_frame'] == 1]), 0)
+        keys = {p['key'] for p in sequence['pending']}
+        self.assertEqual(keys, {'a1:1', 'a1:2'})
+        item = next(p for p in sequence['pending'] if p['key'] == 'a1:1')
+        self.assertEqual(item['kind'], 'ambiguous')
+        self.assertEqual([c['to_id'] for c in item['candidates']], [1, 2])
+        state = self.mutate('POST', sid, 'pending/a1:1/resolve', {
+            'revision': sequence['revision'], 'action': 'link', 'to_id': 2,
+        })
+        self.assertIn('a1:2', {p['key'] for p in state['pending']})
+        state = self.mutate('POST', sid, 'relink', {'revision': state['revision']})
+        self.assertEqual(state['pending'], [])
+        pair_links = [l for l in state['links'] if l['from_frame'] == 1]
+        self.assertEqual(len(pair_links), 2)
+        follow = next(l for l in pair_links if l['from_id'] == 2)
+        self.assertEqual((follow['to_frame'], follow['to_id']), (2, 1))
+        self.assertEqual(follow['source'], 'auto')
+        full = [t for t in state['tracks'] if t['point_count'] == 3]
+        self.assertEqual(len(full), 2)
+        track_a = next(t for t in full if any(p['frame'] == 2 and p['particle_id'] == 2 for p in t['points']))
+        nodes = [[p['frame'], p['particle_id']] for p in track_a['points']]
+        self.assertEqual(nodes, [[0, 1], [1, 1], [2, 2]])
+        state = self.mutate('POST', sid, 'links/confirm', {
+            'revision': state['revision'], 'from_frame': 0, 'from_id': 1,
+        })
+        state = self.mutate('POST', sid, 'relink', {'revision': state['revision']})
+        confirmed = next(l for l in state['links'] if l['from_frame'] == 0 and l['from_id'] == 1)
+        self.assertEqual(confirmed['status'], 'confirmed')
+        state = self.mutate('DELETE', sid, 'links', {
+            'revision': state['revision'], 'from_frame': 0, 'from_id': 1,
+        })
+        self.assertTrue(state['affected']['changed'])
+        state = self.mutate('POST', sid, 'links', {
+            'revision': state['revision'], 'from_frame': 0, 'from_id': 1, 'to_frame': 1, 'to_id': 1,
+        })
+        restored = next(t for t in state['tracks'] if t['id'] == track_a['id'])
+        self.assertEqual([[p['frame'], p['particle_id']] for p in restored['points']], [[0, 1], [1, 1], [2, 2]])
+
+    def test_tracking_gap_and_border_events(self):
+        frames = [
+            [(100, 100), (300, 200), (380, 40), (380, 260)],
+            [(110, 100), (300, 200), (405, 40), (405, 260)],
+            [(300, 200), (15, 300), (415, 295)],
+            [(130, 100), (300, 200), (15, 300)],
+        ]
+        _, sequence = self.make_sequence(frames, settings={'max_distance': 25, 'border_margin': 20})
+        sid = sequence['id']
+        keys = {p['key']: p for p in sequence['pending']}
+        self.assertEqual(set(keys), {'g1:2', 'b1:4'})
+        self.assertEqual(keys['g1:2']['kind'], 'gap')
+        self.assertEqual(keys['g1:2']['to_frame'], 3)
+        self.assertEqual(keys['b1:4']['kind'], 'border')
+        events = {(e['frame'], e['particle_id'], e['kind']) for e in sequence['events']}
+        self.assertIn((1, 1, 'left_frame'), events)
+        self.assertIn((1, 4, 'left_frame'), events)
+        self.assertIn((2, 3, 'entered_frame'), events)
+        quiet = next(t for t in sequence['tracks'] if t['point_count'] == 4)
+        self.assertEqual(quiet['gap_count'], 0)
+        state = self.mutate('POST', sid, 'pending/g1:2/resolve', {
+            'revision': sequence['revision'], 'action': 'link', 'to_id': 1,
+        })
+        gap_track = next(t for t in state['tracks'] if t['gap_count'] == 1)
+        self.assertEqual([[p['frame'], p['particle_id']] for p in gap_track['points']], [[0, 2], [1, 2], [3, 1]])
+        gap_step = next(s for s in gap_track['steps'] if s['to_frame'] == 3)
+        self.assertEqual(gap_step['dt'], 2)
+        self.assertAlmostEqual(gap_step['speed'], 10.0, places=4)
+        state = self.mutate('POST', sid, 'pending/b1:4/resolve', {
+            'revision': state['revision'], 'action': 'reject',
+        })
+        self.assertEqual(len(state['rejected']), 1)
+        state = self.mutate('POST', sid, 'relink', {'revision': state['revision']})
+        self.assertNotIn('b1:4', {p['key'] for p in state['pending']})
+        state = self.mutate('POST', sid, 'rejections/clear', {'revision': state['revision']})
+        self.assertIn('b1:4', {p['key'] for p in state['pending']})
+
+    def test_tracking_preserves_analyses_and_validates(self):
+        raw = self.import_frame([(50, 50)], analyze=False)
+        frames = [[(80, 80), (250, 200)], [(90, 80), (250, 200)], [(100, 80), (250, 200)]]
+        samples, sequence = self.make_sequence(frames)
+        sid = sequence['id']
+        for payload in [
+            {'name': 'x', 'sample_ids': [samples[0]['id']]},
+            {'name': 'x', 'sample_ids': [samples[0]['id'], raw['id']]},
+            {'name': 'x', 'sample_ids': [samples[0]['id'], samples[1]['id']], 'settings': {'max_distance': -1}},
+        ]:
+            response = self.client.post('/api/sequences', json=payload)
+            self.assertEqual(response.status_code, 400, payload)
+        other_size = self.import_frame([(30, 30)], size=(400, 300))
+        response = self.client.post('/api/sequences', json={'name': 'x', 'sample_ids': [samples[0]['id'], other_size['id']]})
+        self.assertEqual(response.status_code, 400)
+        before = []
+        for sample in samples:
+            meta = self.client.get('/api/samples/' + sample['id']).json['meta']
+            result = self.client.get('/api/samples/' + sample['id'] + '/result').json
+            before.append((meta['revision'], meta['analysis_id'], result['count']))
+        state = self.mutate('DELETE', sid, 'links', {'revision': sequence['revision'], 'from_frame': 0, 'from_id': 1})
+        state = self.mutate('POST', sid, 'links', {
+            'revision': state['revision'], 'from_frame': 0, 'from_id': 1, 'to_frame': 1, 'to_id': 1,
+        })
+        state = self.mutate('POST', sid, 'relink', {'revision': state['revision']})
+        stale = self.client.post(f'/api/sequences/{sid}/relink', json={'revision': 999})
+        self.assertEqual(stale.status_code, 409)
+        missing = self.client.post(f'/api/sequences/{sid}/links', json={'from_frame': 0, 'from_id': 1, 'to_id': 1})
+        self.assertEqual(missing.status_code, 400)
+        for sample, (revision, analysis_id, count) in zip(samples, before):
+            meta = self.client.get('/api/samples/' + sample['id']).json['meta']
+            result = self.client.get('/api/samples/' + sample['id'] + '/result').json
+            self.assertEqual(meta['revision'], revision)
+            self.assertEqual(meta['analysis_id'], analysis_id)
+            self.assertEqual(result['count'], count)
+            self.assertEqual(result['id'], analysis_id)
+        listed = self.client.get('/api/sequences').json
+        self.assertTrue(any(s['id'] == sid for s in listed))
+        deleted = self.client.open(f'/api/sequences/{sid}', method='DELETE', json={'revision': state['revision']})
+        self.assertEqual(deleted.status_code, 200)
+        gone = self.client.get(f'/api/sequences/{sid}')
+        self.assertEqual(gone.status_code, 400)
+
+    def test_tracking_rebind_frame(self):
+        frames = [
+            [(80, 80), (250, 200)],
+            [(90, 80), (250, 200)],
+            [(100, 80), (250, 200)],
+        ]
+        samples, sequence = self.make_sequence(frames)
+        sid = sequence['id']
+        target = samples[1]
+        revision = self.client.get('/api/samples/' + target['id']).json['meta']['revision']
+        again = self.client.post('/api/samples/' + target['id'] + '/analyze', json={
+            'revision': revision, 'method': 'manual', 'threshold': 120, 'min_area': 20, 'exclude_edge': False,
+        })
+        self.assertEqual(again.status_code, 200, again.json)
+        new_analysis = again.json['id']
+        state = self.sequence(sid)
+        self.assertFalse(state['frames'][1]['is_current_analysis'])
+        state = self.mutate('POST', sid, 'frames/1/rebind', {'revision': state['revision']})
+        self.assertTrue(state['frames'][1]['is_current_analysis'])
+        self.assertEqual(state['frames'][1]['analysis_id'], new_analysis)
+        touching = [l for l in state['links'] if l['from_frame'] == 1 or l['to_frame'] == 1]
+        self.assertEqual(touching, [])
+        self.assertTrue(all(t['point_count'] == 1 for t in state['tracks']))
+        self.assertTrue(state['affected']['changed'])
 
 
 if __name__ == '__main__':

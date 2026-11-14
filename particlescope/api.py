@@ -58,7 +58,7 @@ def image_response(image):
     return Response(png_bytes(image), mimetype='image/png', headers={'Cache-Control': 'no-store'})
 
 
-def create_api(store, service, recipes, jobs):
+def create_api(store, service, recipes, jobs, tracking):
     api = Blueprint('api', __name__, url_prefix='/api')
 
     @api.get('/health')
@@ -746,5 +746,69 @@ def create_api(store, service, recipes, jobs):
         bins = v.integer(data.get('bins', 72), '角度采样数', 12, 360)
         with store.lock:
             return jsonify(radial_signature(service.labels(key), particle_id, bins))
+
+    @api.get('/sequences')
+    def sequences():
+        return jsonify(tracking.list())
+
+    @api.post('/sequences')
+    def create_sequence():
+        return jsonify(tracking.create(body())), 201
+
+    @api.get('/sequences/<sid>')
+    def sequence(sid):
+        return jsonify(tracking.state(tracking.load(sid)))
+
+    @api.patch('/sequences/<sid>')
+    def update_sequence(sid):
+        return jsonify(tracking.update(sid, body()))
+
+    @api.delete('/sequences/<sid>')
+    def delete_sequence(sid):
+        return jsonify(tracking.delete(sid, body()))
+
+    @api.post('/sequences/<sid>/relink')
+    def relink_sequence(sid):
+        data = body()
+        return jsonify(tracking.relink(sid, data.get('revision')))
+
+    @api.post('/sequences/<sid>/links')
+    def add_sequence_link(sid):
+        return jsonify(tracking.add_link(sid, body()))
+
+    @api.delete('/sequences/<sid>/links')
+    def remove_sequence_link(sid):
+        return jsonify(tracking.remove_link(sid, body()))
+
+    @api.post('/sequences/<sid>/links/confirm')
+    def confirm_sequence_link(sid):
+        return jsonify(tracking.confirm_link(sid, body()))
+
+    @api.post('/sequences/<sid>/pending/<key>/resolve')
+    def resolve_sequence_pending(sid, key):
+        return jsonify(tracking.resolve(sid, key, body()))
+
+    @api.post('/sequences/<sid>/rejections/clear')
+    def clear_sequence_rejections(sid):
+        return jsonify(tracking.clear_rejections(sid, body()))
+
+    @api.post('/sequences/<sid>/frames/<int:index>/rebind')
+    def rebind_sequence_frame(sid, index):
+        return jsonify(tracking.rebind(sid, index, body()))
+
+    @api.get('/sequences/<sid>/overlay/<int:frame>')
+    def sequence_overlay(sid, frame):
+        return image_response(tracking.overlay(sid, frame, request.args.get('track')))
+
+    @api.get('/sequences/<sid>/pick')
+    def sequence_pick(sid):
+        frame = v.integer(request.args.get('frame', 0), '帧序号', 0, 99)
+        x = v.real(request.args.get('x', 0), '坐标X', 0, 16000)
+        y = v.real(request.args.get('y', 0), '坐标Y', 0, 16000)
+        return jsonify(tracking.pick(sid, frame, x, y))
+
+    @api.get('/sequences/<sid>/export/tracks.csv')
+    def sequence_tracks_csv(sid):
+        return binary_response(tracking.tracks_csv(sid), 'tracks.csv', 'text/csv')
 
     return api

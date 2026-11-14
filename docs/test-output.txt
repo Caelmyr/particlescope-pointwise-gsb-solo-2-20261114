@@ -1,3 +1,8 @@
+test_tracking_basic_trajectory_and_velocity (test_workflows.TrackingWorkflows.test_tracking_basic_trajectory_and_velocity) ... ok
+test_tracking_crossing_requires_confirmation (test_workflows.TrackingWorkflows.test_tracking_crossing_requires_confirmation) ... ok
+test_tracking_gap_and_border_events (test_workflows.TrackingWorkflows.test_tracking_gap_and_border_events) ... ok
+test_tracking_preserves_analyses_and_validates (test_workflows.TrackingWorkflows.test_tracking_preserves_analyses_and_validates) ... ok
+test_tracking_rebind_frame (test_workflows.TrackingWorkflows.test_tracking_rebind_frame) ... ok
 test_affine_landmarks_recover_translation (test_workflows.Workflows.test_affine_landmarks_recover_translation) ... ok
 test_annotations_recalibrate (test_workflows.Workflows.test_annotations_recalibrate) ... ok
 test_batch_recipe_and_restart_persistence (test_workflows.Workflows.test_batch_recipe_and_restart_persistence) ... ok
@@ -25,6 +30,6 @@ test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_recon
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 30 tests in 15.065s
 
 OK

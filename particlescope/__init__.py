@@ -6,6 +6,7 @@ from .storage import Store, ConflictError
 from .service import AnalysisService
 from .recipes import RecipeService, ensure_builtins
 from .jobs import JobService
+from .tracking import TrackingService
 from .api import create_api
 
 
@@ -25,11 +26,13 @@ def create_app(data_dir=None):
     recipes = RecipeService(store)
     ensure_builtins(recipes)
     jobs = JobService(store, service, recipes)
+    tracking = TrackingService(store)
     app.extensions['store'] = store
     app.extensions['analysis'] = service
     app.extensions['recipes'] = recipes
     app.extensions['jobs'] = jobs
-    app.register_blueprint(create_api(store, service, recipes, jobs))
+    app.extensions['tracking'] = tracking
+    app.register_blueprint(create_api(store, service, recipes, jobs, tracking))
 
     @app.get('/')
     def index():

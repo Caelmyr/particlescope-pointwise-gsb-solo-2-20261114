@@ -379,6 +379,194 @@ async function renderJobs(output){
   }
   if(!jobs.length)output.append(el('p','暂无任务，选择样本和配方后开始。','muted'));
 }
+/* 时序颗粒跟踪 */
+const seq={id:null,data:null,frame:0,mode:'view',pickFrom:null,trackFilter:null,selectedTrack:null};
+const seqKindLabels={ambiguous:'交叉/靠近',gap:'疑似漏检',border:'进出画面'};
+const seqEventLabels={started:'新出现',ended:'消失',entered_frame:'进入画面',left_frame:'离开画面'};
+Object.assign(labels,{from_frame:'起始帧',to_frame:'目标帧',dt:'时间间隔',distance:'位移',vx:'速度X',vy:'速度Y',speed:'速度',frame:'帧',time:'时间',particle_id:'颗粒编号',track_id:'轨迹'});
+$('tracking').onclick=guard(openSequences);
+async function openSequences(){
+  const sequences=await request('/api/sequences');
+  const body=openDialog('时序颗粒跟踪');
+  body.append(el('p','把同一视野连续拍摄的样本按时间排列，关联各帧已分割的颗粒，查看轨迹与速度。交叉靠近、暂时漏检和进出画面不会强行连线，会列为待定对应供人工确认；所有修改只影响时序，各帧原有分析结果不变。','hint'));
+  const create=el('button','＋ 新建时序','primary');create.onclick=()=>renderSequenceCreate(body);body.append(create);
+  for(const s of sequences){
+    const card=el('div',undefined,'history-card');
+    card.append(el('h3',s.name),el('p',`${s.frame_count} 帧 · ${s.track_count} 条轨迹 · ${s.link_count} 个关联 · 间隔 ${fmt(s.interval)} ${s.interval_unit} · 更新于 ${s.updated_at}`,'muted'));
+    const open=el('button','打开');open.onclick=guard(async()=>{seq.data=await request('/api/sequences/'+s.id);seq.id=s.id;seq.frame=0;seq.trackFilter=null;seq.selectedTrack=null;renderSequence(openDialog(s.name))});
+    const del=el('button','删除');del.onclick=guard(async()=>{const full=await request('/api/sequences/'+s.id);await request(`/api/sequences/${s.id}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:full.revision})});await openSequences()});
+    card.append(open,del);body.append(card);
+  }
+  if(!sequences.length)body.append(el('p','还没有时序。请先为每个时间点的样本运行图像分析，再新建时序。','muted'));
+}
+function renderSequenceCreate(body){
+  body.replaceChildren();
+  const analyzed=state.samples.filter(s=>!s.archived&&s.analysis_id);
+  if(analyzed.length<2){body.append(el('p','至少需要两个已分析的样本。请先对各时间点的图像运行图像分析。','hint'));return}
+  body.append(el('p','勾选样本并用 ↑↓ 调整时间顺序；每帧使用样本当前的分析结果，创建后钉住该版本，之后重新分析样本不会改变已建时序。','hint'));
+  const order=analyzed.map(s=>s.id).sort((a,b)=>(state.selected.has(a)?0:1)-(state.selected.has(b)?0:1));
+  const chosen=new Set([...state.selected].filter(id=>analyzed.some(s=>s.id===id)));
+  const list=el('div');
+  const renderList=()=>{
+    list.replaceChildren();
+    order.forEach((id,idx)=>{
+      const sample=analyzed.find(s=>s.id===id);
+      const row=el('div',undefined,'seq-row');
+      const check=el('input');check.type='checkbox';check.checked=chosen.has(id);
+      check.onchange=()=>{check.checked?chosen.add(id):chosen.delete(id)};
+      const name=el('span',`${idx+1}. ${sample.name}`);
+      const up=el('button','↑');up.type='button';up.onclick=()=>{if(idx>0){[order[idx-1],order[idx]]=[order[idx],order[idx-1]];renderList()}};
+      const down=el('button','↓');down.type='button';down.onclick=()=>{if(idx<order.length-1){[order[idx+1],order[idx]]=[order[idx],order[idx+1]];renderList()}};
+      row.append(check,name,up,down);list.append(row);
+    });
+  };
+  renderList();body.append(list);
+  body.append(makeForm([
+    txt('name','时序名称','视野时序'),
+    num('interval','拍摄间隔',1,0.000001),
+    sel('interval_unit','时间单位','min',[['frame','帧'],['s','秒'],['min','分钟'],['h','小时'],['d','天']]),
+    num('max_distance','帧间最大位移 px',40,0.1,5000),
+  ],'创建并自动关联',async data=>{
+    const ids=order.filter(id=>chosen.has(id));
+    if(ids.length<2)throw Error('至少勾选两个样本');
+    const created=await post('/api/sequences',{name:data.name,sample_ids:ids,interval:data.interval,interval_unit:data.interval_unit,settings:{max_distance:data.max_distance}});
+    seq.id=created.id;seq.data=created;seq.frame=0;seq.trackFilter=null;seq.selectedTrack=null;
+    renderSequence(openDialog(created.name));
+    status(`时序已创建：${created.summary.track_count} 条轨迹，${created.summary.pending_count} 个待定对应`);
+  }));
+}
+function renderSequence(body){
+  const data=seq.data;
+  body.replaceChildren();
+  if(data.affected&&(data.affected.changed.length||data.affected.retired.length)){
+    const parts=[];
+    if(data.affected.changed.length)parts.push('已重算轨迹：'+data.affected.changed.join('、'));
+    if(data.affected.retired.length)parts.push('不再存在：'+data.affected.retired.join('、'));
+    body.append(el('p',parts.join('；'),'hint'));
+  }
+  const summary=data.summary;
+  const metrics=el('div',undefined,'metric-grid');
+  for(const [value,title] of [[summary.frame_count,'帧数'],[summary.track_count,'轨迹数'],[summary.pending_count,'待定对应'],[summary.complete_tracks,'贯穿全程'],[summary.mean_speed==null?null:`${fmt(summary.mean_speed)} ${data.velocity_unit}`,'平均速度']]){
+    if(value===null||value===undefined)continue;
+    const card=el('div',undefined,'metric-card');card.append(el('small',title),el('strong',fmt(value)));metrics.append(card);
+  }
+  body.append(metrics);
+  if(summary.calibration_warning)body.append(el('p',summary.calibration_warning,'hint'));
+  const frame=data.frames[seq.frame];
+  const nav=el('div',undefined,'seq-nav');
+  const prev=el('button','◀ 上一帧');prev.disabled=seq.frame===0;prev.onclick=()=>{seq.frame--;renderSequence(body)};
+  const next=el('button','下一帧 ▶');next.disabled=seq.frame===data.frames.length-1;next.onclick=()=>{seq.frame++;renderSequence(body)};
+  nav.append(prev,el('span',`帧 ${seq.frame+1}/${data.frames.length} · t=${fmt(frame.time)} ${data.time_unit} · ${frame.particle_count} 个颗粒 · ${frame.name}`),next);
+  if(!frame.is_current_analysis){
+    const rebind=el('button','该帧样本已有新分析，重新绑定');
+    rebind.onclick=guard(async()=>{seq.data=await post(`/api/sequences/${seq.id}/frames/${seq.frame}/rebind`,{revision:seq.data.revision});renderSequence(body);status('已重新绑定到样本当前分析，该帧关联已重算')});
+    nav.append(rebind);
+  }
+  if(frame.image_mismatch)nav.append(el('span','该帧图像在分析后有过修改，叠加可能不对齐','muted'));
+  body.append(nav);
+  const modes=el('div',undefined,'seq-modes');
+  for(const [mode,labeltext] of [['view','查看'],['link','手动关联'],['unlink','删除关联']]){
+    const b=el('button',labeltext);b.classList.toggle('active',seq.mode===mode);
+    b.onclick=()=>{seq.mode=mode;seq.pickFrom=null;renderSequence(body)};
+    modes.append(b);
+  }
+  if(seq.mode==='link')modes.append(el('span',seq.pickFrom?`已选 帧${seq.pickFrom.frame+1} 颗粒#${seq.pickFrom.id}，切换到后续帧点击目标`:'点击本帧一个颗粒作为起点','muted'));
+  body.append(modes);
+  const img=el('img',undefined,'seq-overlay');
+  img.src=`/api/sequences/${seq.id}/overlay/${seq.frame}?v=${data.revision}${seq.trackFilter?'&track='+seq.trackFilter:''}`;
+  img.onclick=guard(async e=>{
+    if(seq.mode==='view'||!img.naturalWidth)return;
+    const rect=img.getBoundingClientRect();
+    const x=(e.clientX-rect.left)/rect.width*img.naturalWidth,y=(e.clientY-rect.top)/rect.height*img.naturalHeight;
+    const particle=await request(`/api/sequences/${seq.id}/pick?frame=${seq.frame}&x=${x}&y=${y}`);
+    if(!particle)return status('该位置没有颗粒');
+    if(!particle.included)return status('该颗粒在该帧分析中已被排除，不能关联');
+    if(seq.mode==='link'){
+      if(!seq.pickFrom){seq.pickFrom={frame:seq.frame,id:particle.id};renderSequence(body);return}
+      const from=seq.pickFrom;seq.pickFrom=null;
+      if(seq.frame<=from.frame)throw Error('请先切换到起始帧之后的帧再选目标');
+      seq.data=await post(`/api/sequences/${seq.id}/links`,{revision:seq.data.revision,from_frame:from.frame,from_id:from.id,to_frame:seq.frame,to_id:particle.id});
+      renderSequence(body);status('手动关联已保存');
+    }else if(seq.mode==='unlink'){
+      seq.data=await request(`/api/sequences/${seq.id}/links`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:seq.data.revision,from_frame:seq.frame,from_id:particle.id})});
+      renderSequence(body);status('关联已删除');
+    }
+  });
+  body.append(img);
+  const pendingBox=el('div');
+  pendingBox.append(el('h3',`待定对应（${data.pending.length}）`));
+  if(!data.pending.length)pendingBox.append(el('p','没有待确认的对应；所有明确关联已自动完成。','muted'));
+  for(const item of data.pending){
+    const card=el('div',undefined,'pending-card');
+    card.append(el('h3',`帧${item.frame+1} 颗粒#${item.from_id} → 帧${item.to_frame+1} · ${seqKindLabels[item.kind]}`),el('p',item.reason,'muted'));
+    for(const cand of item.candidates){
+      const b=el('button',`关联 → #${cand.to_id}（${fmt(cand.distance)} px）`);
+      b.onclick=guard(async()=>{seq.data=await post(`/api/sequences/${seq.id}/pending/${item.key}/resolve`,{revision:seq.data.revision,action:'link',to_id:cand.to_id});renderSequence(body)});
+      card.append(b);
+    }
+    const reject=el('button','无关联（结束/离开）');
+    reject.onclick=guard(async()=>{seq.data=await post(`/api/sequences/${seq.id}/pending/${item.key}/resolve`,{revision:seq.data.revision,action:'reject'});renderSequence(body)});
+    const locate=el('button','查看');
+    locate.onclick=()=>{seq.frame=item.frame;renderSequence(body)};
+    card.append(reject,locate);
+    pendingBox.append(card);
+  }
+  body.append(pendingBox);
+  if(data.events.length){
+    const details=el('details');details.append(el('summary',`进出与起止事件（${data.events.length}）`));
+    details.append(el('p',data.events.map(e=>`帧${e.frame+1} #${e.particle_id} ${seqEventLabels[e.kind]}`).join('；'),'muted'));
+    body.append(details);
+  }
+  body.append(el('h3',`轨迹（${data.tracks.length}）`));
+  const wrap=el('div',undefined,'table-wrap');
+  const table=el('table'),head=el('thead'),hrow=el('tr');
+  for(const title of ['轨迹','帧范围','点数','跨帧','平均速度','最大速度','净位移','路径长度'])hrow.append(el('th',title));
+  head.append(hrow);table.append(head);
+  const tbody=el('tbody');
+  for(const track of data.tracks.slice(0,300)){
+    const row=el('tr');
+    for(const value of [track.id,`${track.start_frame+1}–${track.end_frame+1}`,track.point_count,track.gap_count,track.mean_speed,track.max_speed,track.net_displacement,track.path_length])row.append(el('td',fmt(value)));
+    row.onclick=()=>{seq.selectedTrack=track.id;renderSequence(body)};
+    tbody.append(row);
+  }
+  table.append(tbody);wrap.append(table);body.append(wrap);
+  if(data.tracks.length>300)body.append(el('p',`显示前300条，共${data.tracks.length}条；CSV包含全部轨迹`,'muted'));
+  const selected=data.tracks.find(t=>t.id===seq.selectedTrack);
+  if(selected){
+    const detail=el('div',undefined,'output-section');
+    detail.append(el('h3',`轨迹 ${selected.id} · 速度单位 ${data.velocity_unit}`));
+    if(selected.steps.length)chart([{name:'速度',values:selected.steps.map(s=>s.speed)}],`逐步速度 · ${data.velocity_unit}`,detail);
+    renderOutput(selected.steps,detail);
+    const focus=el('button',seq.trackFilter===selected.id?'取消突出显示':'在图上突出显示');
+    focus.onclick=()=>{seq.trackFilter=seq.trackFilter===selected.id?null:selected.id;renderSequence(body)};
+    const close=el('button','收起');close.onclick=()=>{seq.selectedTrack=null;renderSequence(body)};
+    detail.append(focus,close);body.append(detail);
+  }
+  const settingsBox=el('details');settingsBox.append(el('summary','时序设置与操作'));
+  settingsBox.append(makeForm([
+    txt('name','时序名称',data.name),
+    num('interval','拍摄间隔',data.interval,0.000001),
+    sel('interval_unit','时间单位',data.interval_unit,[['frame','帧'],['s','秒'],['min','分钟'],['h','小时'],['d','天']]),
+    num('max_distance','帧间最大位移 px',data.settings.max_distance,0.1,5000),
+    num('margin_ratio','歧义判定比例',data.settings.margin_ratio,1,3),
+    num('margin_abs','歧义判定余量 px',data.settings.margin_abs,0,100),
+    {name:'gap_enabled',label:'允许跨帧（漏检）候选',type:'checkbox',default:data.settings.gap_enabled},
+    num('gap_factor','跨帧距离倍数',data.settings.gap_factor,1,4),
+    num('border_margin','边缘判定宽度 px',data.settings.border_margin,0,500),
+  ],'保存设置并重新关联',async form=>{
+    seq.data=await post(`/api/sequences/${seq.id}`,{revision:seq.data.revision,name:form.name,interval:form.interval,interval_unit:form.interval_unit,settings:{max_distance:form.max_distance,margin_ratio:form.margin_ratio,margin_abs:form.margin_abs,gap_enabled:form.gap_enabled,gap_factor:form.gap_factor,border_margin:form.border_margin}},'PATCH');
+    renderSequence(body);
+  }));
+  const relink=el('button','按当前设置重新自动关联');
+  relink.onclick=guard(async()=>{seq.data=await post(`/api/sequences/${seq.id}/relink`,{revision:seq.data.revision});renderSequence(body);status('已重新自动关联；人工关联与否决记录保留')});
+  const clear=el('button','清空否决记录');
+  clear.onclick=guard(async()=>{seq.data=await post(`/api/sequences/${seq.id}/rejections/clear`,{revision:seq.data.revision});renderSequence(body)});
+  const csv=el('a','↓ 轨迹 CSV');csv.href=`/api/sequences/${seq.id}/export/tracks.csv`;
+  const del=el('button','删除此时序');
+  del.onclick=guard(async()=>{await request(`/api/sequences/${seq.id}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:seq.data.revision})});await openSequences()});
+  settingsBox.append(relink,clear,csv,del);
+  body.append(settingsBox);
+}
 async function init(){
   const [catalog,recipes]=await Promise.all([request('/api/catalog'),request('/api/recipes')]);state.catalog=catalog;state.recipes=recipes;await loadProjects();await loadLibrary();
 }

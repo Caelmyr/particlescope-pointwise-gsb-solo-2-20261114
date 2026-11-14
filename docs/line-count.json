@@ -8,8 +8,8 @@
     },
     {
       "file": "particlescope/__init__.py",
-      "effective_lines": 55,
-      "sha256": "96d19914b1984b3c9294c35584fd6ad794b5d41dca53040a1092e13f99207a07"
+      "effective_lines": 58,
+      "sha256": "6ad5d8eed51cb362bcd0f93a0b2a01ed1841f5971230ffe56ee9e551075f1f1a"
     },
     {
       "file": "particlescope/annotations.py",
@@ -18,8 +18,8 @@
     },
     {
       "file": "particlescope/api.py",
-      "effective_lines": 649,
-      "sha256": "d2f988feba7eabea9b167f635b8f6449c60f7d3dc4067ddabf25f0d98415fc0d"
+      "effective_lines": 701,
+      "sha256": "1ce1cb039b0f0ba0e2be60319401e3660c778f2d919cc261cfa741466cd2f0e3"
     },
     {
       "file": "particlescope/boundaries.py",
@@ -43,8 +43,8 @@
     },
     {
       "file": "particlescope/exports.py",
-      "effective_lines": 153,
-      "sha256": "ede33213bbd10b9f8b75684afe57d9c599f061076cfd052c76578e2a6e3bfd27"
+      "effective_lines": 170,
+      "sha256": "8376f2be3fe056124f08cca89bf9d6d9813a0b34cb2e32224cd600314a5af0f5"
     },
     {
       "file": "particlescope/imaging.py",
@@ -113,8 +113,8 @@
     },
     {
       "file": "particlescope/storage.py",
-      "effective_lines": 272,
-      "sha256": "592dcec4ff41fd4d27ec936fc8d180549ab6f4111b5db1e4c5520ed09e7b5cd7"
+      "effective_lines": 273,
+      "sha256": "1ddeba31ec261cfbb86d1a1c3f2eb3969478e3742b98adaf8cee1709451afdc2"
     },
     {
       "file": "particlescope/synthetic.py",
@@ -127,6 +127,11 @@
       "sha256": "767edaffcbd296a49f2ae33410305e7473ae744f3d811edbebd3cd5a50873f79"
     },
     {
+      "file": "particlescope/tracking.py",
+      "effective_lines": 807,
+      "sha256": "873e1b3220da9edb2c29d8d3fc9a379378ebab0769faeb434805c1561d2d6265"
+    },
+    {
       "file": "particlescope/uncertainty.py",
       "effective_lines": 141,
       "sha256": "55bb962a30549f9105a792765910748045696490bc4bc024122de13d9683b2f8"
@@ -137,6 +142,6 @@
       "sha256": "31f7f2906c519ff841ab6bef69a0ba7671da613413ab94c47545d10fb0fa6934"
     }
   ],
-  "total": 5134,
+  "total": 6014,
   "passes_5000": true
 }
