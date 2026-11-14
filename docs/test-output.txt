@@ -1,3 +1,16 @@
+test_circle_has_no_false_sharp_corners_at_any_scale (test_workflows.BoundaryCurvature.test_circle_has_no_false_sharp_corners_at_any_scale) ... ok
+test_circle_report_names_no_sharp_features_on_demo_particles (test_workflows.BoundaryCurvature.test_circle_report_names_no_sharp_features_on_demo_particles) ... ok
+test_curvature_endpoint_keeps_labels_and_distinguishes_holes (test_workflows.BoundaryCurvature.test_curvature_endpoint_keeps_labels_and_distinguishes_holes) ... ok
+test_ellipse_does_not_report_spurious_corners (test_workflows.BoundaryCurvature.test_ellipse_does_not_report_spurious_corners) ... ok
+test_material_bulge_into_hole_is_a_corner_and_rim_bite_is_a_notch (test_workflows.BoundaryCurvature.test_material_bulge_into_hole_is_a_corner_and_rim_bite_is_a_notch) ... ok
+test_noisy_boundary_is_not_reported_as_a_ring_of_sharp_corners (test_workflows.BoundaryCurvature.test_noisy_boundary_is_not_reported_as_a_ring_of_sharp_corners) ... ok
+test_outer_contour_and_hole_are_reported_separately (test_workflows.BoundaryCurvature.test_outer_contour_and_hole_are_reported_separately) ... ok
+test_pixel_staircase_does_not_create_corners_under_rotation (test_workflows.BoundaryCurvature.test_pixel_staircase_does_not_create_corners_under_rotation) ... ok
+test_rotation_invariant_descriptor_matches (test_workflows.BoundaryCurvature.test_rotation_invariant_descriptor_matches) ... ok
+test_scale_smooths_small_angles_and_sharpens_small_ones (test_workflows.BoundaryCurvature.test_scale_smooths_small_angles_and_sharpens_small_ones) ... ok
+test_scale_stability_reports_matching_counts_for_a_square (test_workflows.BoundaryCurvature.test_scale_stability_reports_matching_counts_for_a_square) ... ok
+test_square_reports_four_corners_and_a_notch_reports_reflex (test_workflows.BoundaryCurvature.test_square_reports_four_corners_and_a_notch_reports_reflex) ... ok
+test_translation_keeps_curvature_profile (test_workflows.BoundaryCurvature.test_translation_keeps_curvature_profile) ... ok
 test_affine_landmarks_recover_translation (test_workflows.Workflows.test_affine_landmarks_recover_translation) ... ok
 test_annotations_recalibrate (test_workflows.Workflows.test_annotations_recalibrate) ... ok
 test_batch_recipe_and_restart_persistence (test_workflows.Workflows.test_batch_recipe_and_restart_persistence) ... ok
@@ -25,6 +38,6 @@ test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_recon
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 38 tests in 14.569s
 
 OK

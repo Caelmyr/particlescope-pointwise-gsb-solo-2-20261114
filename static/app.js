@@ -268,7 +268,142 @@ $('export').onclick=guard(()=>{
   const report=el('a','打开可打印报告 / 另存PDF');report.href=url('report');report.target='_blank';report.rel='noopener';grid.append(report);body.append(grid,el('p','报告内含标定、分割参数、叠加图、粒径分布和测量说明。','hint'));
 });
 function showParticle(row){
-  const body=openDialog('颗粒 #'+row.id);const image=el('img',undefined,'preview');image.src=url(`particle/${row.id}`);body.append(image);renderOutput(row,body);const button=el('button',row.included?'从统计中排除此颗粒':'重新纳入此颗粒');button.onclick=guard(async()=>{const excluded=new Set(state.result.measurement_filters?.exclude_ids||[]);row.included?excluded.add(row.id):excluded.delete(row.id);await mutate('更新颗粒筛选…',()=>post(url('filter'),{...state.result.measurement_filters,exclude_ids:[...excluded],revision:state.sample.revision}));$('dialog').close()});body.append(button);
+  const body=openDialog('颗粒 #'+row.id);const image=el('img',undefined,'preview');image.src=url(`particle/${row.id}`);body.append(image);
+  body.append(curvaturePanel(row));renderOutput(row,body);const button=el('button',row.included?'从统计中排除此颗粒':'重新纳入此颗粒');button.onclick=guard(async()=>{const excluded=new Set(state.result.measurement_filters?.exclude_ids||[]);row.included?excluded.add(row.id):excluded.delete(row.id);await mutate('更新颗粒筛选…',()=>post(url('filter'),{...state.result.measurement_filters,exclude_ids:[...excluded],revision:state.sample.revision}));$('dialog').close()});body.append(button);
+}
+function curvaturePanel(row){
+  const section=el('div',undefined,'curvature-panel');section.append(el('h3','边界曲率与尖角 / 凹口'));
+  section.append(el('p','沿轮廓行进时前景位于左侧：偏转角为正表示凸角，为负表示凹口。观察尺度越大越平滑，细小起伏会被合并。','hint'));
+  const controls=el('div',undefined,'two');
+  const sigma=el('input');sigma.type='range';sigma.min='0.5';sigma.max='20';sigma.step='0.5';sigma.value='2';sigma.id='curvatureSigma';
+  const sigmaOut=el('output','2 px');sigmaOut.id='curvatureSigmaValue';
+  const sigmaLabel=el('label','观察尺度 σ');sigmaLabel.append(sigmaOut,sigma);
+  const turn=el('input');turn.type='range';turn.min='5';turn.max='120';turn.step='1';turn.value='30';turn.id='curvatureTurn';
+  const turnOut=el('output','30°');turnOut.id='curvatureTurnValue';
+  const turnLabel=el('label','最小转角');turnLabel.append(turnOut,turn);
+  controls.append(sigmaLabel,turnLabel);
+  const options=el('div',undefined,'two');
+  const holeLabel=el('label','孔洞轮廓');const holeSelect=el('select');
+  holeSelect.append(new Option('外轮廓 + 孔洞','true'),new Option('仅外轮廓','false'));holeLabel.append(holeSelect);
+  const contourLabel=el('label','查看对象');const contourSelect=el('select');contourLabel.append(contourSelect);
+  options.append(holeLabel,contourLabel);
+  const output=el('div',undefined,'curvature-output');
+  const chartBox=el('div',undefined,'curvature-chart'),featureBox=el('div');
+  const imageBox=el('div',undefined,'curvature-image');
+  const placeholder=el('p','正在载入曲率…','muted');chartBox.append(placeholder);
+  const run=el('button','计算曲率','primary');
+  let latest=null;let current='outer';
+  function selectedContour(){
+    if(current!=='outer'){const hole=latest.holes.find(h=>String(h.hole_index)===current);if(hole)return hole}
+    return latest.outer_contour;
+  }
+  function draw(){
+    if(!latest)return;
+    chartBox.replaceChildren();featureBox.replaceChildren();
+    const contour=selectedContour();
+    curvatureChart(contour,chartBox);
+    const summary=el('div',undefined,'metric-grid');
+    for(const [name,value]of [['凸角',contour.summary.corner_count],['凹口',contour.summary.notch_count],['周长 px',contour.perimeter_px],['采样点',contour.point_count]]){
+      const card=el('div',undefined,'metric-card');card.append(el('small',name),el('strong',fmt(value)));summary.append(card);
+    }
+    featureBox.append(summary);
+    if(contour.features.length){
+      const wrap=el('div',undefined,'table-wrap'),table=el('table'),head=el('thead'),headRow=el('tr');
+      for(const title of ['编号','类型','位置角 °','弧长 px','偏转角 °','曲率半径 px'])headRow.append(el('th',title));
+      head.append(headRow);table.append(head);const tbody=el('tbody');
+      for(const feature of contour.features){const tr=el('tr');for(const value of [feature.id,feature.type==='corner'?'凸角':'凹口',fmt(feature.position_angle_deg),fmt(feature.arc_px),fmt(feature.deflection_deg),fmt(feature.radius_of_curvature)])tr.append(el('td',value));tbody.append(tr)}
+      table.append(tbody);wrap.append(table);featureBox.append(wrap);
+    }else featureBox.append(el('p','当前尺度下没有超过阈值的尖角或凹口；可减小观察尺度或最小转角再试。','muted'));
+    if(latest.scale_stability){
+      const tiers=latest.scale_stability.tiers.map(t=>`σ=${t.sigma_px}px 凸角${t.corner_count}/凹口${t.notch_count}`).join(' · ');
+      featureBox.append(el('p',`尺度稳定性：${tiers}${latest.scale_stability.stable?'（一致）':'（随尺度变化）'}`,latest.scale_stability.stable?'hint':'hint'));
+    }
+    if(latest.sampling_limited)featureBox.append(el('p','轮廓过长，采样点已达到上限；极细密的锯齿可能被略过。','hint'));
+    section.dataset.particle=row.id;
+  }
+  async function load(){
+    const data={particle_id:row.id,sigma_px:Number(sigma.value),min_turn_deg:Number(turn.value),include_holes:holeSelect.value==='true'};
+    latest=await task('正在计算边界曲率…',()=>post(url('boundary-curvature'),data));
+    if(holeSelect.value==='true'){
+      const blob=await request(url('boundary-curvature-image'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+      if(imageBox.dataset.url)URL.revokeObjectURL(imageBox.dataset.url);
+      const objectURLForImage=URL.createObjectURL(blob);imageBox.dataset.url=objectURLForImage;
+      imageBox.replaceChildren();const overlay=el('img');overlay.src=objectURLForImage;overlay.alt='颗粒轮廓与尖角标记';imageBox.append(overlay);
+    }else imageBox.replaceChildren();
+    contourSelect.replaceChildren(new Option('外轮廓','outer'));
+    for(const hole of latest.holes)contourSelect.append(new Option(`孔洞 #${hole.hole_index+1}`,String(hole.hole_index)));
+    if(current!=='outer'&&!latest.holes.some(h=>String(h.hole_index)===current))current='outer';
+    contourSelect.value=current;
+    draw();
+    status(`颗粒 #${row.id} 曲率完成：凸角 ${latest.outer_contour.summary.corner_count}，凹口 ${latest.outer_contour.summary.notch_count}`);
+  }
+  sigma.oninput=()=>{sigmaOut.textContent=sigma.value+' px'};
+  turn.oninput=()=>{turnOut.textContent=turn.value+'°'};
+  sigma.onchange=turn.onchange=guard(load);
+  contourSelect.onchange=()=>{current=contourSelect.value;draw()};
+  holeSelect.onchange=guard(load);
+  run.onclick=guard(load);
+  section.append(controls,options,run,output);output.append(imageBox,chartBox,featureBox);
+  load().catch(error=>{chartBox.replaceChildren(el('p','曲率计算失败：'+error.message,'hint'))});
+  return section;
+}
+function curvatureChart(contour,container){
+  const profile=contour.comparable_profile;const values=profile.normalized_curvature;const fractions=profile.arc_fraction;
+  if(!values.length)return;
+  const canvas=el('canvas');canvas.width=900;canvas.height=330;container.append(canvas);
+  const c=canvas.getContext('2d');c.fillStyle='#10202b';c.fillRect(0,0,900,330);
+  const title=contour.kind==='hole'?'孔洞归一化曲率':'外轮廓归一化曲率';
+  c.fillStyle='#cde3ea';c.font='14px sans-serif';c.fillText(title+' · 横轴为沿轮廓的周长比例',18,24);
+  const left=64,right=872,top=52,bottom=276;
+  const low=Math.min(0,...values),high=Math.max(...values,low+0.5);
+  c.strokeStyle='#3d5567';c.beginPath();c.moveTo(left,top);c.lineTo(left,bottom);c.lineTo(right,bottom);c.stroke();
+  for(let i=0;i<=4;i++){const y=bottom-i*(bottom-top)/4;const value=low+(high-low)*i/4;c.fillStyle='#9bb5c6';c.font='11px sans-serif';c.fillText(fmt(value).slice(0,7),6,y+4);c.strokeStyle='#263e4d';c.beginPath();c.moveTo(left,y);c.lineTo(right,y);c.stroke()}
+  const xOf=value=>left+(right-left)*Number(value);
+  const yOf=value=>bottom-(Number(value)-low)/(high-low)*(bottom-top);
+  c.beginPath();values.forEach((value,i)=>{const x=xOf(fractions[i]);const y=yOf(value);i?c.lineTo(x,y):c.moveTo(x,y)});c.strokeStyle='#64e4ba';c.lineWidth=2;c.stroke();
+  if(low<0&&high>0){const y=yOf(0);c.setLineDash([5,4]);c.strokeStyle='#5c7789';c.beginPath();c.moveTo(left,y);c.lineTo(right,y);c.stroke();c.setLineDash([]);c.fillStyle='#8fa8b8';c.font='11px sans-serif';c.fillText('0',6,y+4)}
+  for(const feature of contour.features){
+    const x=xOf(feature.arc_fraction);const corner=feature.type==='corner';
+    const color=corner?'#ff6078':'#ffc454';
+    c.strokeStyle=color;c.lineWidth=1.5;c.beginPath();c.moveTo(x,top);c.lineTo(x,bottom);c.stroke();
+    c.fillStyle=color;c.beginPath();c.arc(x,bottom-8,3,0,Math.PI*2);c.fill();
+    c.font='11px sans-serif';c.fillText(feature.id,Math.min(x+3,right-18),top+12);
+  }
+  c.fillStyle='#9bb5c6';c.font='11px sans-serif';c.fillText('0',left,bottom+16);c.fillText('1',right-6,bottom+16);
+  c.fillStyle='#ff6078';c.fillText('红=凸角',left+8,top-12);c.fillStyle='#ffc454';c.fillText('黄=凹口',left+82,top-12);
+}
+function renderCurvatureContour(contour,container){
+  const wrap=el('div',undefined,'curvature-tool');
+  const metrics=el('div',undefined,'metric-grid');
+  for(const [name,value]of [['凸角',contour.summary?.corner_count??0],['凹口',contour.summary?.notch_count??0],['周长 px',contour.perimeter_px],['采样点',contour.point_count]]){
+    const card=el('div',undefined,'metric-card');card.append(el('small',name),el('strong',fmt(value)));metrics.append(card);
+  }
+  wrap.append(metrics);
+  const chartBox=el('div',undefined,'curvature-chart');curvatureChart(contour,chartBox);wrap.append(chartBox);
+  if(contour.features?.length){
+    const tableWrap=el('div',undefined,'table-wrap'),table=el('table'),head=el('thead'),row=el('tr');
+    for(const title of ['编号','类型','位置角 °','弧长 px','偏转角 °','曲率半径 px'])row.append(el('th',title));
+    head.append(row);table.append(head);const tbody=el('tbody');
+    for(const feature of contour.features){const tr=el('tr');for(const value of [feature.id,feature.type==='corner'?'凸角':'凹口',fmt(feature.position_angle_deg),fmt(feature.arc_px),fmt(feature.deflection_deg),fmt(feature.radius_of_curvature)])tr.append(el('td',value));tbody.append(tr)}
+    table.append(tbody);tableWrap.append(table);wrap.append(tableWrap);
+  }
+  container.append(wrap);
+}
+function renderCurvatureReport(report,container){
+  const wrapper=el('div',undefined,'curvature-report');
+  const summary=el('div',undefined,'metric-grid');
+  for(const [name,value]of [['凸角合计',report.corner_count],['凹口合计',report.notch_count],['观察尺度 px',report.sigma_px],['最小转角 °',report.min_turn_deg],['孔洞轮廓数',report.holes.length]]){
+    const card=el('div',undefined,'metric-card');card.append(el('small',name),el('strong',fmt(value)));summary.append(card);
+  }
+  wrapper.append(summary);
+  if(report.scale_stability){
+    const notes=report.scale_stability.tiers.map(t=>`σ=${t.sigma_px}px：凸角 ${t.corner_count}、凹口 ${t.notch_count}`).join('；');
+    wrapper.append(el('p',`尺度稳定性：${notes}${report.scale_stability.stable?'；计数一致':'；计数随尺度变化，需人工复核'}`,report.scale_stability.stable?'hint':'hint'));
+  }
+  const outerBox=el('div');outerBox.append(el('h3','外轮廓'));renderCurvatureContour(report.outer_contour,outerBox);wrapper.append(outerBox);
+  for(const hole of report.holes){const box=el('div');box.append(el('h3',`孔洞 #${hole.hole_index+1}`));renderCurvatureContour(hole,box);wrapper.append(box)}
+  wrapper.append(el('p',report.warning||'','hint'));
+  container.append(wrapper);
 }
 $('annotations').onclick=guard(async()=>{
   requireSample();const data=await request(url('annotations'));const body=openDialog('人工测量与标注');body.append(el('p','使用画布工具选择线段、角度或多边形，点击对应端点即可保存。标注随尺寸标定更新。','hint'));
@@ -311,6 +446,7 @@ function renderOutput(data,target,depth=0){
   if(data.g&&data.radii){chart([{name:'g(r)',values:data.g}],'径向对分布',target);plotted.add('g');plotted.add('radii')}
   if(data.l_minus_r){chart([{name:'L(r) − r',values:data.l_minus_r}],'Ripley函数',target);plotted.add('l_minus_r');plotted.add('k');plotted.add('radii')}
   if(data.normalized_radius){chart([{name:'归一化半径',values:data.normalized_radius}],'径向形状 · 0°–360°',target);plotted.add('normalized_radius');plotted.add('radius_px');plotted.add('angles_degrees')}
+  if(data.comparable_profile&&data.features){renderCurvatureContour(data,target);for(const key of ['kind','comparable_profile','features','curvature_px','normalized_curvature','arc_px','arc_fraction','x_px','y_px','rotation_invariant','summary','point_count','sample_step_px','perimeter','perimeter_px','area','area_px','equivalent_radius','equivalent_radius_px','hole_index','curvature'])plotted.add(key)}
   if(data.colors){const swatches=el('div',undefined,'swatches');for(const color of data.colors){const swatch=el('div',`${color.hex} · ${fmt(color.percent)}%`,'swatch');swatch.style.background=color.hex;swatches.append(swatch)}target.append(swatches)}
   const metrics=el('div',undefined,'metric-grid');const nested=[];
   for(const [key,value]of Object.entries(data)){
@@ -340,7 +476,8 @@ function openTool(key){
       if(objectURL)URL.revokeObjectURL(objectURL);objectURL=URL.createObjectURL(result);const img=el('img');img.src=objectURL;output.append(img);const a=el('a','↓ 下载图像');a.href=objectURL;a.download=tool.key+'.png';output.append(a);
     }else{
       if(Array.isArray(result)&&result.length&&result[0].threshold!==undefined)chart([{name:'颗粒数',values:result.map(r=>r.count)}],'阈值扫描 · 从低到高',output);
-      renderOutput(result,output);const save=el('button','下载完整结果 JSON');save.onclick=()=>downloadJSON(result,tool.key+'.json');output.append(save);
+      if(key==='boundary-curvature'&&result?.outer_contour)renderCurvatureReport(result,output);else renderOutput(result,output);
+      const save=el('button','下载完整结果 JSON');save.onclick=()=>downloadJSON(result,tool.key+'.json');output.append(save);
     }
     status(tool.label+'完成');
   }));layout.append(controls,output);body.append(layout);

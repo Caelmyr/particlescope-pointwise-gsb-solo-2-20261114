@@ -239,6 +239,14 @@ def tool_catalog():
             number('bins', '角度采样数', 72, 12, 360, 1),
         ], '相对质心的径向边界与傅里叶幅度，不适合表达凹形内部结构。',
     ))
+    tools.append(tool(
+        'boundary-curvature', '颗粒边界曲率与尖角', '形态', 'boundary-curvature', 'POST', [
+            number('particle_id', '颗粒编号', 1, 1, 20000, 1),
+            number('sigma_px', '观察尺度 σ px', 2.0, 0.5, 40, 0.5),
+            number('min_turn_deg', '最小转角 °', 30, 5, 170, 1),
+            checkbox('include_holes', '包含孔洞轮廓', True),
+        ], '沿外轮廓和孔洞轮廓的曲率序列，标记凸角与凹口；尺度可调，像素台阶不应当作尖角。',
+    ))
     return {
         'tools': tools,
         'measurements': [{'key': key, 'label': label} for key, label in MEASUREMENTS],

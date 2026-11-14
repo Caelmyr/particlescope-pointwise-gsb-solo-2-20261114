@@ -747,4 +747,35 @@ def create_api(store, service, recipes, jobs):
         with store.lock:
             return jsonify(radial_signature(service.labels(key), particle_id, bins))
 
+    @api.post('/samples/<key>/boundary-curvature')
+    def boundary_curvature(key):
+        from .curvature import particle_curvature
+        data = body()
+        particle_id = v.integer(data.get('particle_id', 1), '颗粒编号', 1, 20000)
+        sigma_px = v.real(data.get('sigma_px', 2.0), '观察尺度 px', 0.5, 40)
+        min_turn = v.real(data.get('min_turn_deg', 30.0), '最小转角', 5, 170)
+        include_holes = v.boolean(data.get('include_holes', True), '包含孔洞轮廓')
+        with store.lock:
+            report = service.require_result(key)
+            return jsonify(particle_curvature(
+                service.labels(key), particle_id, report['calibration'], sigma_px, min_turn, include_holes,
+            ))
+
+    @api.post('/samples/<key>/boundary-curvature-image')
+    def boundary_curvature_image(key):
+        from .curvature import particle_curvature
+        from .rendering import curvature_overlay
+        data = body()
+        particle_id = v.integer(data.get('particle_id', 1), '颗粒编号', 1, 20000)
+        sigma_px = v.real(data.get('sigma_px', 2.0), '观察尺度 px', 0.5, 40)
+        min_turn = v.real(data.get('min_turn_deg', 30.0), '最小转角', 5, 170)
+        include_holes = v.boolean(data.get('include_holes', True), '包含孔洞轮廓')
+        with store.lock:
+            report = service.require_result(key)
+            analysis = particle_curvature(
+                service.labels(key), particle_id, report['calibration'], sigma_px, min_turn, include_holes,
+            )
+            image = curvature_overlay(store.working_image(key), service.labels(key), particle_id, analysis)
+            return image_response(image)
+
     return api

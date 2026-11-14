@@ -226,3 +226,39 @@ def png_bytes(image):
     stream = io.BytesIO()
     image.save(stream, format='PNG')
     return stream.getvalue()
+
+
+def curvature_overlay(image, labels, particle_id, report, margin=10, display_size=420):
+    from .measurements import particle_crop
+    mask = labels == particle_id
+    if not np.any(mask):
+        raise ValidationError('颗粒编号不存在')
+    y, x = np.nonzero(mask)
+    left = max(0, int(x.min()) - margin)
+    top = max(0, int(y.min()) - margin)
+    right = min(image.width, int(x.max()) + margin + 1)
+    bottom = min(image.height, int(y.max()) + margin + 1)
+    crop = particle_crop(image, labels, particle_id, margin, isolate=False).convert('RGB')
+    factor = display_size / max(right - left, bottom - top, 1)
+    size = (max(1, int(round((right - left) * factor))), max(1, int(round((bottom - top) * factor))))
+    crop = crop.resize(size, Image.LANCZOS)
+    draw = ImageDraw.Draw(crop)
+    text_font = font(max(11, display_size // 32))
+    layers = [('outer', report['outer_contour'], (72, 226, 190))]
+    for hole in report.get('holes', []):
+        layers.append(('hole', hole, (120, 178, 246)))
+    for _, contour, color in layers:
+        points = [((px - left) * factor, (py - top) * factor)
+                  for px, py in zip(contour['x_px'], contour['y_px'])]
+        if len(points) < 3:
+            continue
+        draw.line(points + [points[0]], fill=color, width=2)
+        for feature in contour.get('features', []):
+            px = (feature['x_px'] - left) * factor
+            py = (feature['y_px'] - top) * factor
+            radius = max(4, display_size // 70)
+            marker = (255, 96, 120) if feature['type'] == 'corner' else (255, 196, 84)
+            draw.ellipse((px - radius, py - radius, px + radius, py + radius), outline=marker, width=2)
+            draw.text((px + radius + 2, py - radius), feature['id'], font=text_font,
+                      fill=marker, stroke_width=1, stroke_fill='black')
+    return crop

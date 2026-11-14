@@ -321,5 +321,236 @@ class Workflows(unittest.TestCase):
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
 
 
+class BoundaryCurvature(unittest.TestCase):
+    calibration = {'scale': 1.0, 'unit': 'px', 'pixel_length': 1, 'physical_length': 1}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.app = create_app(cls.temp.name)
+        cls.app.testing = True
+        cls.client = cls.app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.extensions['jobs'].executor.shutdown(wait=True)
+        cls.temp.cleanup()
+
+    def demo(self):
+        response = self.client.post('/api/demo', json={'kind': 'isolated'})
+        self.assertEqual(response.status_code, 201, response.json)
+        return response.json
+
+    def request(self, method, sample, path, data=None):
+        response = self.client.open('/api/samples/' + sample['id'] + '/' + path, method=method, json=data)
+        self.assertEqual(response.status_code, 200, response.json if response.is_json else response.data[:200])
+        value = response.json if response.is_json else response.data
+        response.close()
+        return value
+
+    def meta(self, sample):
+        return self.client.get('/api/samples/' + sample['id']).json['meta']
+
+    def analyze(self, sample, **parameters):
+        parameters['revision'] = self.meta(sample)['revision']
+        return self.request('POST', sample, 'analyze', parameters)
+
+    def shape(self, points=None, operation=None):
+        from PIL import ImageDraw
+        image = Image.new('1', (320, 320), 0)
+        draw = ImageDraw.Draw(image)
+        if operation:
+            draw.polygon(points, fill=1)
+            mask = np.asarray(image, dtype=bool)
+            if operation == 'notch':
+                cleared = Image.fromarray(mask)
+                ImageDraw.Draw(cleared).polygon([(120, 82), (200, 82), (160, 130)], fill=0)
+                mask = np.asarray(cleared, dtype=bool)
+            return mask
+        draw.polygon(points, fill=1)
+        return np.asarray(image, dtype=bool)
+
+    def analyse(self, mask, sigma=2.0, min_turn=30.0, holes=True):
+        from particlescope.curvature import particle_curvature
+        return particle_curvature(mask.astype(np.int32), 1, self.calibration, sigma, min_turn, holes)
+
+    def rotated(self, mask, angle, shift=(0, 0)):
+        from PIL import Image
+        image = Image.fromarray((mask * 255).astype(np.uint8)).rotate(
+            angle, resample=Image.BILINEAR, center=(160, 160), translate=shift, fillcolor=0)
+        return np.asarray(image) > 127
+
+    def test_circle_has_no_false_sharp_corners_at_any_scale(self):
+        y, x = np.indices((320, 320))
+        disk = (x - 160) ** 2 + (y - 160) ** 2 <= 60 ** 2
+        for sigma in [1.0, 2.0, 4.0, 8.0]:
+            report = self.analyse(disk, sigma)
+            self.assertEqual(report['outer_contour']['summary']['corner_count'], 0, sigma)
+            self.assertEqual(report['outer_contour']['summary']['notch_count'], 0, sigma)
+            self.assertEqual(report['corner_count'], 0)
+
+    def test_pixel_staircase_does_not_create_corners_under_rotation(self):
+        y, x = np.indices((320, 320))
+        disk = (x - 160) ** 2 + (y - 160) ** 2 <= 60 ** 2
+        for angle in [0, 15, 45, 31]:
+            report = self.analyse(self.rotated(disk, angle), 2.0)
+            self.assertEqual(report['outer_contour']['summary']['corner_count'], 0, angle)
+            self.assertEqual(report['outer_contour']['summary']['notch_count'], 0, angle)
+
+    def test_translation_keeps_curvature_profile(self):
+        y, x = np.indices((320, 320))
+        disk = (x - 160) ** 2 + (y - 160) ** 2 <= 60 ** 2
+        base = self.analyse(disk, 2.0)['outer_contour']
+        moved = self.analyse(self.rotated(disk, 0, (2.5, 1.5)), 2.0)['outer_contour']
+        self.assertAlmostEqual(base['perimeter_px'], moved['perimeter_px'], delta=5)
+        self.assertEqual(base['summary']['corner_count'], moved['summary']['corner_count'])
+        self.assertEqual(base['summary']['notch_count'], moved['summary']['notch_count'])
+        first = base['comparable_profile']
+        second = moved['comparable_profile']
+        self.assertAlmostEqual(first['bin_count'], second['bin_count'], delta=2)
+        np.testing.assert_allclose(np.mean(first['normalized_curvature']),
+                                   np.mean(second['normalized_curvature']), atol=0.35)
+
+    def test_square_reports_four_corners_and_a_notch_reports_reflex(self):
+        square = self.shape([(100, 100), (220, 100), (220, 220), (100, 220)])
+        report = self.analyse(square, 2.0)['outer_contour']
+        self.assertEqual(report['summary']['corner_count'], 4)
+        self.assertEqual(report['summary']['notch_count'], 0)
+        for feature in report['features']:
+            self.assertAlmostEqual(feature['deflection_deg'], 90, delta=12)
+        notched = self.shape([(100, 100), (220, 100), (220, 220), (100, 220)], 'notch')
+        report = self.analyse(notched, 2.0)['outer_contour']
+        self.assertEqual(report['summary']['notch_count'], 1)
+        self.assertGreater(report['summary']['corner_count'], 0)
+        reflex = [f for f in report['features'] if f['type'] == 'notch'][0]
+        self.assertLess(reflex['deflection_deg'], 0)
+        self.assertAlmostEqual(reflex['x_px'], 160, delta=12)
+        self.assertAlmostEqual(reflex['y_px'], 130, delta=12)
+
+    def test_ellipse_does_not_report_spurious_corners(self):
+        y, x = np.indices((320, 320))
+        ellipse = ((x - 160) / 90) ** 2 + ((y - 160) / 35) ** 2 <= 1
+        for sigma in [1.0, 2.0, 4.0]:
+            report = self.analyse(ellipse, sigma)
+            self.assertEqual(report['outer_contour']['summary']['corner_count'], 0, sigma)
+
+    def test_outer_contour_and_hole_are_reported_separately(self):
+        y, x = np.indices((320, 320))
+        ring = ((x - 160) ** 2 + (y - 160) ** 2 <= 70 ** 2) & ~((x - 160) ** 2 + (y - 160) ** 2 <= 35 ** 2)
+        report = self.analyse(ring, 2.0, holes=True)
+        self.assertEqual(len(report['holes']), 1)
+        self.assertEqual(report['outer_contour']['kind'], 'outer')
+        self.assertEqual(report['holes'][0]['kind'], 'hole')
+        self.assertLess(report['holes'][0]['area_px'], report['outer_contour']['area_px'])
+        excluded = self.analyse(ring, 2.0, holes=False)
+        self.assertEqual(excluded['holes'], [])
+        self.assertEqual(excluded['skipped_hole_count'], 1)
+
+    def test_scale_smooths_small_angles_and_sharpens_small_ones(self):
+        y, x = np.indices((320, 320))
+        disk = (x - 160) ** 2 + (y - 160) ** 2 <= 60 ** 2
+        notched = Image.fromarray(disk)
+        from PIL import ImageDraw
+        ImageDraw.Draw(notched).polygon([(120, 82), (200, 82), (160, 130)], fill=0)
+        mask = np.asarray(notched, dtype=bool)
+        small_scale = self.analyse(mask, 1.0)['outer_contour']
+        large_scale = self.analyse(mask, 8.0)['outer_contour']
+        self.assertGreater(np.max(np.abs(small_scale['curvature_px'])),
+                           np.max(np.abs(large_scale['curvature_px'])))
+        self.assertGreaterEqual(small_scale['summary']['corner_count'] + small_scale['summary']['notch_count'], 1)
+
+    def test_material_bulge_into_hole_is_a_corner_and_rim_bite_is_a_notch(self):
+        y, x = np.indices((320, 320))
+        ring = ((x - 160) ** 2 + (y - 160) ** 2 <= 70 ** 2) & ~((x - 160) ** 2 + (y - 160) ** 2 <= 40 ** 2)
+        from PIL import ImageDraw
+        protruded = Image.fromarray(ring)
+        ImageDraw.Draw(protruded).polygon([(160, 150), (146, 122), (174, 122)], fill=1)
+        report = self.analyse(np.asarray(protruded, dtype=bool), 2.0)
+        hole = report['holes'][0]
+        tip = [f for f in hole['features'] if f['type'] == 'corner']
+        self.assertEqual(len(tip), 1)
+        self.assertAlmostEqual(tip[0]['x_px'], 160, delta=6)
+        self.assertAlmostEqual(tip[0]['y_px'], 150, delta=6)
+        self.assertGreater(tip[0]['deflection_deg'], 60)
+        bitten = Image.fromarray(ring)
+        ImageDraw.Draw(bitten).polygon([(160, 160), (140, 120), (180, 120)], fill=0)
+        hole = self.analyse(np.asarray(bitten, dtype=bool), 2.0)['holes'][0]
+        notches = [f for f in hole['features'] if f['type'] == 'notch']
+        self.assertGreaterEqual(len(notches), 2)
+        for feature in notches:
+            self.assertLess(feature['deflection_deg'], 0)
+
+    def test_scale_stability_reports_matching_counts_for_a_square(self):
+        square = self.shape([(100, 100), (220, 100), (220, 220), (100, 220)])
+        report = self.analyse(square, 2.0)
+        self.assertTrue(report['scale_stability']['stable'])
+        self.assertEqual(len(report['scale_stability']['tiers']), 3)
+        for tier in report['scale_stability']['tiers']:
+            self.assertEqual(tier['corner_count'], 4)
+            self.assertEqual(tier['notch_count'], 0)
+
+    def test_noisy_boundary_is_not_reported_as_a_ring_of_sharp_corners(self):
+        from scipy import ndimage as ndi
+        y, x = np.indices((400, 400))
+        angle = np.arctan2(y - 200, x - 200)
+        radius = np.hypot(x - 200, y - 200)
+        jitter = ndi.gaussian_filter(np.random.default_rng(11).normal(0, 5.0, (400, 400)), 6)
+        rough = radius <= 140 + 1.5 * np.sin(angle * 17) + jitter
+        for sigma in [2.0, 4.0]:
+            report = self.analyse(rough, sigma)['outer_contour']
+            total = report['summary']['corner_count'] + report['summary']['notch_count']
+            self.assertLessEqual(total, 1, sigma)
+        stable = self.analyse(rough, 4.0)['outer_contour']['summary']
+        self.assertEqual(stable['corner_count'], 0)
+        self.assertEqual(stable['notch_count'], 0)
+
+    def test_rotation_invariant_descriptor_matches(self):
+        shape = self.shape([(100, 90), (220, 90), (220, 180), (170, 180), (170, 240), (100, 240)])
+        base = self.analyse(shape, 2.0)['outer_contour']
+        turned = self.analyse(self.rotated(shape, 23), 2.0)['outer_contour']
+        self.assertEqual(base['summary']['corner_count'], turned['summary']['corner_count'])
+        self.assertEqual(base['summary']['notch_count'], turned['summary']['notch_count'])
+        first = base['rotation_invariant']['relative_magnitude']
+        second = turned['rotation_invariant']['relative_magnitude']
+        self.assertEqual(len(first), len(second))
+        for a, b in zip(first, second):
+            self.assertAlmostEqual(a, b, delta=max(0.05, abs(a) * 0.2))
+
+    def test_curvature_endpoint_keeps_labels_and_distinguishes_holes(self):
+        y, x = np.indices((320, 320))
+        ring = ((x - 160) ** 2 + (y - 160) ** 2 <= 70 ** 2) & ~((x - 160) ** 2 + (y - 160) ** 2 <= 35 ** 2)
+        sample = self.demo()
+        revision = self.meta(sample)['revision']
+        self.request('POST', sample, 'analyze', {'method': 'otsu', 'fill_holes': False, 'revision': revision})
+        labels_before = self.app.extensions['analysis'].labels(sample['id'])
+        particle_id = int(labels_before.max())
+        labels_path = self.app.extensions['store'].sample_dir(sample['id']) / 'analyses'
+        target = next(labels_path.iterdir()) / 'labels.npy'
+        before = target.read_bytes()
+        report = self.request('POST', sample, 'boundary-curvature', {
+            'particle_id': particle_id, 'sigma_px': 2.0, 'min_turn_deg': 30, 'include_holes': True,
+        })
+        self.assertEqual(report['particle_id'], particle_id)
+        self.assertEqual(report['outer_contour']['kind'], 'outer')
+        self.assertEqual(len(report['outer_contour']['curvature_px']),
+                         len(report['outer_contour']['arc_px']))
+        self.assertIsNotNone(report['outer_contour']['rotation_invariant']['relative_magnitude'])
+        profile = report['outer_contour']['comparable_profile']
+        self.assertEqual(len(profile['arc_fraction']), len(profile['normalized_curvature']))
+        self.assertGreaterEqual(profile['bin_count'], 8)
+        self.assertEqual(before, target.read_bytes())
+
+    def test_circle_report_names_no_sharp_features_on_demo_particles(self):
+        sample = self.demo()
+        self.analyze(sample, method='otsu')
+        for particle_id in [1, 5, 20]:
+            for sigma in [1.0, 3.0, 6.0]:
+                report = self.request('POST', sample, 'boundary-curvature', {
+                    'particle_id': particle_id, 'sigma_px': sigma,
+                })
+                self.assertEqual(report['corner_count'], 0, (particle_id, sigma))
+                self.assertEqual(report['notch_count'], 0, (particle_id, sigma))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
