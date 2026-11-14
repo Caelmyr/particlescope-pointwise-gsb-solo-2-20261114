@@ -186,7 +186,7 @@ def tool_catalog():
     ))
     tools.append(tool(
         'reference-score', '参考掩膜评估', '分割', 'reference-score',
-        note='先上传同尺寸二值参考图；演示样本自带参考掩膜。显示IoU、Dice、精确率与召回率。',
+        note='先上传同尺寸二值参考图；演示样本自带参考掩膜。显示IoU、Dice、精确率与召回率；边界距离与容差仅比较真实轮廓，区域裁切边缘不参与评分。',
     ))
     tools.append(tool(
         'gallery', '颗粒裁片图册', '导出', 'gallery',

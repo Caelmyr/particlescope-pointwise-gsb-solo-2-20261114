@@ -5,8 +5,38 @@ from .statistics import scalar, describe
 from .validation import ValidationError
 
 
+TRUNCATION_NOTE = '分析区域截断产生的人造边缘不参与边界评分，仅比较真实对象轮廓'
+TRUNCATION_REASON = '有效区域内没有可比较的真实轮廓（边界均来自分析区域或图像边缘的裁切），无法评价'
+
+
 def boundary_pixels(mask):
     return mask & ~ndi.binary_erosion(mask, border_value=0)
+
+
+def split_boundary(mask, valid):
+    """把有效区域内掩膜的边界拆成真实对象轮廓与观测截断边缘。
+
+    掩膜被分析区域裁切后，贴着区域边界的边缘是观测截断的产物而非对象
+    真实轮廓；两侧掩膜在同一区域裁切下这些人造边缘必然重合，参与评分
+    会掩盖真实轮廓的缺失。分析区域始终受图像范围约束，图像边缘处的
+    掩膜边界同样属于截断。这里按是否与无效区域或图像外相邻把二者分开。
+    """
+    boundary = boundary_pixels(mask & valid)
+    if not np.any(boundary):
+        return boundary, boundary
+    near_invalid = ndi.binary_dilation(
+        ~valid, structure=ndi.generate_binary_structure(2, 1), border_value=1)
+    truncated = boundary & near_invalid
+    return boundary & ~truncated, truncated
+
+
+def boundary_scope(first, first_truncated, second, second_truncated):
+    return {
+        'predicted_real_boundary_pixels': int(np.count_nonzero(first)),
+        'reference_real_boundary_pixels': int(np.count_nonzero(second)),
+        'predicted_truncated_pixels': int(np.count_nonzero(first_truncated)),
+        'reference_truncated_pixels': int(np.count_nonzero(second_truncated)),
+    }
 
 
 def surface_distances(predicted, reference, valid=None, scale=1):
@@ -14,33 +44,55 @@ def surface_distances(predicted, reference, valid=None, scale=1):
         raise ValidationError('两个掩膜尺寸必须一致')
     if valid is None:
         valid = np.ones(predicted.shape, dtype=bool)
-    first = boundary_pixels(predicted & valid)
-    second = boundary_pixels(reference & valid)
+    first, first_truncated = split_boundary(predicted, valid)
+    second, second_truncated = split_boundary(reference, valid)
+    scope = boundary_scope(first, first_truncated, second, second_truncated)
     if not np.any(first) or not np.any(second):
+        if scope['predicted_truncated_pixels'] or scope['reference_truncated_pixels']:
+            reason = TRUNCATION_REASON
+        else:
+            reason = '至少一个掩膜在有效区域内没有边界'
         return {
             'hausdorff': None,
             'hausdorff95': None,
             'average_symmetric_surface_distance': None,
-            'reason': '至少一个掩膜没有边界',
+            'predicted_to_reference': None,
+            'reference_to_predicted': None,
+            'evaluable': False,
+            'reason': reason,
+            **scope,
         }
     to_second = ndi.distance_transform_edt(~second)[first] * scale
     to_first = ndi.distance_transform_edt(~first)[second] * scale
     combined = np.concatenate([to_second, to_first])
-    return {
+    result = {
         'hausdorff': scalar(combined.max()),
         'hausdorff95': scalar(np.percentile(combined, 95)),
         'average_symmetric_surface_distance': scalar(combined.mean()),
         'predicted_to_reference': describe(to_second),
         'reference_to_predicted': describe(to_first),
+        'evaluable': True,
+        **scope,
     }
+    if scope['predicted_truncated_pixels'] or scope['reference_truncated_pixels']:
+        result['note'] = TRUNCATION_NOTE
+    return result
 
 
-def tolerance_scores(predicted, reference, tolerances=None):
+def tolerance_scores(predicted, reference, valid=None, tolerances=None):
     tolerances = tolerances or [1, 2, 3, 5]
-    first = boundary_pixels(predicted)
-    second = boundary_pixels(reference)
+    if valid is None:
+        valid = np.ones(predicted.shape, dtype=bool)
+    first, _ = split_boundary(predicted, valid)
+    second, _ = split_boundary(reference, valid)
     if not np.any(first) or not np.any(second):
-        return []
+        return [{
+            'tolerance_px': tolerance,
+            'boundary_precision': None,
+            'boundary_recall': None,
+            'boundary_f1': None,
+            'evaluable': False,
+        } for tolerance in tolerances]
     distance_to_first = ndi.distance_transform_edt(~first)
     distance_to_second = ndi.distance_transform_edt(~second)
     results = []
@@ -53,6 +105,7 @@ def tolerance_scores(predicted, reference, tolerances=None):
             'boundary_precision': scalar(precision),
             'boundary_recall': scalar(recall),
             'boundary_f1': scalar(f1),
+            'evaluable': True,
         })
     return results
 
@@ -138,9 +191,13 @@ def reference_boundary_report(predicted, reference, selected, scale=1):
     r = reference & selected
     first_labels, _ = ndi.label(p)
     second_labels, _ = ndi.label(r)
-    return {
-        'surface_distance': surface_distances(p, r, selected, scale),
-        'boundary_tolerance': tolerance_scores(p, r),
+    surface = surface_distances(p, r, selected, scale)
+    report = {
+        'surface_distance': surface,
+        'boundary_tolerance': tolerance_scores(p, r, selected),
         'connected_component_matching': object_overlap(first_labels, second_labels),
         'warning': '参考为二值连通对象，粘连实例无法作为独立实例评分',
     }
+    if surface['predicted_truncated_pixels'] or surface['reference_truncated_pixels']:
+        report['note'] = TRUNCATION_NOTE + '；像素重叠指标（IoU、Dice等）仍按有效区域内全部像素计算'
+    return report

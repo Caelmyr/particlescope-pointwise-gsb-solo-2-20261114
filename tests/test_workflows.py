@@ -16,6 +16,7 @@ from particlescope.rendering import png_bytes
 from particlescope.synthetic import generate_sample
 from particlescope.registration import phase_correlation, translate, affine_landmarks
 from particlescope.segmentation import evaluate_reference
+from particlescope.boundaries import surface_distances, tolerance_scores
 from particlescope.measurements import crofton_perimeter
 from particlescope.morphology import skeletonize
 
@@ -85,6 +86,70 @@ class Workflows(unittest.TestCase):
         self.assertGreater(result['count'], 10)
         for particle in result['particles']:
             self.assertFalse(particle['touches_roi'])
+
+    def test_reference_score_marks_roi_truncation(self):
+        sample = self.demo()
+        polygon = {'type': 'polygon', 'points': [[0, 0], [500, 0], [400, 639], [0, 639]]}
+        self.request('PUT', sample, 'roi', {'revision': 0, 'roi': polygon})
+        self.analyze(sample, exclude_edge=False)
+        score = self.request('GET', sample, 'reference-score')
+        surface = score['surface_distance']
+        self.assertTrue(surface['evaluable'])
+        self.assertGreater(surface['predicted_truncated_pixels'], 0)
+        self.assertGreater(surface['reference_truncated_pixels'], 0)
+        self.assertGreater(surface['predicted_real_boundary_pixels'], 0)
+        self.assertIn('note', score)
+        self.assertTrue(all(entry['evaluable'] for entry in score['boundary_tolerance']))
+        self.assertGreater(score['iou'], 0.9)
+
+    def test_truncation_edges_not_scored_as_real_contours(self):
+        shape = (200, 200)
+        y, x = np.indices(shape)
+        reference = (x - 100) ** 2 + (y - 100) ** 2 <= 40 ** 2
+        predicted = reference & ~((x - 70) ** 2 + (y - 70) ** 2 <= 20 ** 2)
+        full = np.ones(shape, bool)
+        distance = surface_distances(predicted, reference, full)
+        self.assertTrue(distance['evaluable'])
+        self.assertGreater(distance['average_symmetric_surface_distance'], 1)
+        valid = np.zeros(shape, bool)
+        valid[100:, 100:] = True
+        clipped_distance = surface_distances(predicted & valid, reference & valid, valid)
+        self.assertTrue(clipped_distance['evaluable'])
+        self.assertGreater(clipped_distance['predicted_truncated_pixels'], 0)
+        self.assertGreater(clipped_distance['predicted_real_boundary_pixels'], 0)
+        self.assertEqual(clipped_distance['average_symmetric_surface_distance'], 0)
+        cut_valid = np.zeros(shape, bool)
+        cut_valid[:120, :] = True
+        cut_distance = surface_distances(predicted & cut_valid, reference & cut_valid, cut_valid)
+        self.assertTrue(cut_distance['evaluable'])
+        self.assertGreater(cut_distance['predicted_truncated_pixels'], 0)
+        self.assertGreater(cut_distance['average_symmetric_surface_distance'], 1)
+        cut_tolerance = tolerance_scores(predicted & cut_valid, reference & cut_valid, cut_valid)
+        self.assertTrue(all(entry['evaluable'] for entry in cut_tolerance))
+        self.assertTrue(all(entry['boundary_f1'] < 1 for entry in cut_tolerance))
+
+    def test_only_truncation_edges_are_not_evaluable(self):
+        shape = (200, 200)
+        blob = np.ones(shape, bool)
+        valid = np.zeros(shape, bool)
+        valid[50:150, 50:150] = True
+        distance = surface_distances(blob, blob, valid)
+        self.assertFalse(distance['evaluable'])
+        self.assertIsNone(distance['hausdorff'])
+        self.assertIsNone(distance['average_symmetric_surface_distance'])
+        self.assertIn('无法评价', distance['reason'])
+        self.assertGreater(distance['predicted_truncated_pixels'], 0)
+        self.assertEqual(distance['predicted_real_boundary_pixels'], 0)
+        for entry in tolerance_scores(blob, blob, valid):
+            self.assertFalse(entry['evaluable'])
+            self.assertIsNone(entry['boundary_f1'])
+        score = evaluate_reference(blob, blob, valid)
+        self.assertEqual(score['iou'], 1)
+        self.assertEqual(score['true_positive'], int(valid.sum()))
+        full_image = surface_distances(blob, blob, np.ones(shape, bool))
+        self.assertFalse(full_image['evaluable'])
+        empty = np.zeros(shape, bool)
+        self.assertFalse(surface_distances(empty, blob, valid)['evaluable'])
 
     def test_touching_separation(self):
         sample = self.demo('touching')
