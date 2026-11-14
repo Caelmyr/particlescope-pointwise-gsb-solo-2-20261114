@@ -213,6 +213,37 @@ def revision(body):
     return integer(body.get('revision'), '修订号', 0)
 
 
+def flatfield(body):
+    body = mapping(body, '平场校正参数')
+    return {
+        'saturation_level': real(body.get('saturation_level', 250), '饱和阈值', 1, 255),
+        'min_response': real(body.get('min_response', 1), '最小参考响应', 0, 255),
+        'min_response_fraction': real(body.get('min_response_fraction', 0.05), '响应比例下限', 0, 1),
+        'max_gain': real(body.get('max_gain', 20), '最大增益', 1, 1000),
+        'bad_pixel_sigma': real(body.get('bad_pixel_sigma', 6), '坏点判定倍数', 1, 50),
+        'margin': integer(body.get('margin', 1), '不可靠区域外扩', 0, 20),
+    }
+
+
+def flatfield_pair(body):
+    body = mapping(body, '平场校正')
+    return {
+        'flat_id': identifier(body.get('flat_id'), '明场参考编号'),
+        'dark_id': identifier(body.get('dark_id'), '暗场参考编号'),
+        'parameters': flatfield(body.get('parameters', {})),
+    }
+
+
+def flatfield_correction(body):
+    value = flatfield_pair(body)
+    value.update({
+        'sample_id': identifier(body.get('sample_id'), '样本编号'),
+        'save': boolean(body.get('save', False), '另存新样本'),
+        'name': text(body.get('name', ''), '新样本名称', 180),
+    })
+    return value
+
+
 def tags(value):
     items = sequence(value, '标签', 20)
     result = []

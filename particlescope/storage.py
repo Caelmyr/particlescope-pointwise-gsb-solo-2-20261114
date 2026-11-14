@@ -1,3 +1,5 @@
+"""Archival and persistence helpers for ParticleScope."""
+
 from pathlib import Path
 from contextlib import contextmanager
 from threading import RLock
@@ -7,6 +9,7 @@ import json
 import os
 import shutil
 import uuid
+import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 from .validation import ValidationError, identifier, text, tags, now
 
@@ -80,7 +83,7 @@ class Store:
                 result.append(meta)
         return sorted(result, key=lambda m: m.get('updated_at', ''), reverse=True)
 
-    def import_image(self, stream, filename, project_id=None):
+    def import_image(self, stream, filename, project_id=None, unreliable_stream=None, provenance=None, calibration=None):
         if project_id:
             self.project(project_id)
         try:
@@ -99,6 +102,15 @@ class Store:
                 image.load()
         except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
             raise ValidationError('无法解码图像，支持PNG、JPEG、TIFF、BMP、WebP') from exc
+        unreliable = None
+        if unreliable_stream is not None:
+            try:
+                with Image.open(unreliable_stream) as decoded:
+                    if decoded.size != image.size:
+                        raise ValidationError('不可靠区域掩膜必须与新样本同尺寸')
+                    unreliable = decoded.convert('L').copy()
+            except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
+                raise ValidationError('不可靠区域掩膜不能解码') from exc
         with self.lock:
             sample_id = uuid.uuid4().hex
             path = self.samples / sample_id
@@ -134,7 +146,14 @@ class Store:
                 'calibration': {'unit': 'px', 'scale': 1, 'pixel_length': 1, 'physical_length': 1},
                 'archived': False,
                 'history': [],
+                'unreliable_mask': unreliable is not None,
             }
+            if unreliable is not None:
+                self.image_write(path / 'unreliable.png', unreliable)
+            if calibration:
+                meta['calibration'] = deepcopy(calibration)
+            if provenance:
+                self.json_write(path / 'provenance.json', provenance)
             self.json_write(path / 'meta.json', meta)
             self.json_write(path / 'annotations.json', [])
             return meta
@@ -177,6 +196,14 @@ class Store:
         with Image.open(path / 'working.png') as image:
             return image.convert('RGB')
 
+    def reliable_mask(self, sample_id):
+        """Boolean mask of pixels the analysis may use; None means all pixels."""
+        path = self.sample_dir(sample_id) / 'unreliable.png'
+        if not path.exists():
+            return None
+        with Image.open(path) as image:
+            return np.asarray(image.convert('L')) <= 127
+
     def original_image(self, sample_id):
         path = self.sample_dir(sample_id)
         with Image.open(path / 'original.png') as image:
@@ -208,6 +235,8 @@ class Store:
                 meta['roi'] = {'type': 'full'}
                 meta['calibration'] = {'unit': 'px', 'scale': 1, 'pixel_length': 1, 'physical_length': 1}
                 self.json_write(path / 'annotations.json', [])
+                (path / 'unreliable.png').unlink(missing_ok=True)
+                meta['unreliable_mask'] = False
             meta['image_revision'] += 1
             meta['analysis_id'] = None
         return self.meta(sample_id)

@@ -48,6 +48,13 @@ class Workflows(unittest.TestCase):
     def meta(self, sample):
         return self.client.get('/api/samples/' + sample['id']).json['meta']
 
+    def request_status(self, status, method, sample, path, data=None):
+        response = self.client.open('/api/samples/' + sample['id'] + '/' + path, method=method, json=data)
+        self.assertEqual(response.status_code, status, response.json)
+        value = response.json
+        response.close()
+        return value
+
     def analyze(self, sample, **parameters):
         parameters['revision'] = self.meta(sample)['revision']
         return self.request('POST', sample, 'analyze', parameters)
@@ -319,6 +326,92 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+    def flatfield_demo(self):
+        response = self.client.post('/api/demo/flatfield', json={})
+        self.assertEqual(response.status_code, 201, response.json)
+        return response.json
+
+    def test_flatfield_correction_removes_illumination(self):
+        demo = self.flatfield_demo()
+        sample, flat, dark = demo['sample'], demo['flat'], demo['dark']
+        self.assertEqual(len({sample['width'], flat['width'], dark['width']}), 1)
+        raw = self.analyze(sample, method='otsu')
+        self.assertLess(raw['count'], 40)
+        preview = self.request('POST', sample, 'flatfield/preview', {
+            'flat_id': flat['id'], 'dark_id': dark['id'], 'parameters': {},
+        })
+        self.assertEqual(len(preview['channels']), 3)
+        self.assertGreater(preview['unreliable_percent'], 0)
+        self.assertLess(preview['unreliable_percent'], 5)
+        self.assertTrue(preview['unreliable_png'].startswith('data:image/png;base64,'))
+        created = self.request_status(201, 'POST', sample, 'flatfield', {
+            'revision': self.meta(sample)['revision'],
+            'sample_id': sample['id'], 'flat_id': flat['id'], 'dark_id': dark['id'],
+            'parameters': {}, 'save': True, 'name': '平场校正样本',
+        })
+        corrected = created['sample']
+        self.assertTrue(corrected['unreliable_mask'])
+        self.assertEqual((corrected['width'], corrected['height']), (sample['width'], sample['height']))
+        result = self.analyze(corrected, method='otsu')
+        self.assertEqual(result['count'], 40)
+        self.assertGreater(result['coverage'], raw['coverage'])
+        self.assertEqual(result['details']['unreliable_pixels'], created['details']['unreliable_pixels'])
+        labels = self.app.extensions['analysis'].labels(corrected['id'])
+        unreliable = np.asarray(Image.open(io.BytesIO(
+            self.request('GET', corrected, 'image/unreliable')
+        ))) > 0
+        self.assertFalse(np.any(labels[unreliable]))
+        truth = np.asarray(Image.open(io.BytesIO(self.request('GET', sample, 'image/reference')))) > 0
+        self.assertGreater(evaluate_reference(labels > 0, truth)['iou'], 0.99)
+        self.assertGreater(self.request('GET', corrected, 'reference-score')['iou'], 0.99)
+
+    def test_flatfield_rejects_mismatched_reference(self):
+        sample = self.demo()
+        smaller = self.client.post('/api/samples', data={
+            'file': (io.BytesIO(png_bytes(Image.new('RGB', (320, 240), (180, 180, 180)))), 'small.png'),
+        }).json['imported'][0]
+        response = self.client.post('/api/samples/' + sample['id'] + '/flatfield/preview', json={
+            'flat_id': smaller['id'], 'dark_id': sample['id'], 'parameters': {},
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('同尺寸', response.json['error'])
+        same = self.client.post('/api/samples/' + sample['id'] + '/flatfield/preview', json={
+            'flat_id': sample['id'], 'dark_id': sample['id'], 'parameters': {},
+        })
+        self.assertEqual(same.status_code, 400)
+
+    def test_flatfield_marks_saturated_and_dead_pixels_unreliable(self):
+        from particlescope.flatfield import correct_flatfield
+        size = (64, 48)
+        rng = np.random.default_rng(4)
+        flat = np.full((size[1], size[0], 3), 200.0)
+        dark = np.full((size[1], size[0], 3), 10.0)
+        sample = np.full((size[1], size[0], 3), 120.0)
+        sample += rng.normal(0, 1, sample.shape)
+        flat[5, 5] = 255
+        dark[7, 9] = 255
+        sample[20, 20] = 255
+        flat[30:34, 40:44] = dark[30:34, 40:44] + 0.5
+        parameters = {
+            'saturation_level': 250, 'min_response': 1, 'min_response_fraction': 0.05,
+            'max_gain': 20, 'bad_pixel_sigma': 6, 'margin': 0,
+        }
+        corrected = correct_flatfield(
+            Image.fromarray(sample.astype(np.uint8)),
+            Image.fromarray(flat.astype(np.uint8)),
+            Image.fromarray(dark.astype(np.uint8)),
+            parameters,
+        )
+        unreliable = corrected['unreliable']
+        for y, x in [(5, 5), (7, 9), (20, 20)]:
+            self.assertTrue(unreliable[y, x], (y, x))
+        self.assertTrue(unreliable[31, 41])
+        self.assertFalse(unreliable[2, 2])
+        median_response = 190.0
+        self.assertAlmostEqual(corrected['details']['channels'][0]['median_response'], median_response, places=3)
+        repaired = np.asarray(corrected['image'])[20, 20]
+        self.assertLess(repaired.max(), 200)
 
 
 if __name__ == '__main__':

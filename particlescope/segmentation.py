@@ -148,16 +148,24 @@ def filter_labels(labels, parameters, selected):
     }
 
 
-def segment(image, parameters, region):
+def segment(image, parameters, region, reliable=None):
     selected = region_mask(image.size, region)
-    binary, gray, info = threshold_image(image, parameters, selected)
-    cleaned = clean_binary(binary, parameters, selected)
+    usable = selected if reliable is None else selected & reliable
+    if not np.any(usable):
+        raise ValidationError('分析区域内没有可用像素，请检查区域或平场校正的不可靠区域')
+    binary, gray, info = threshold_image(image, parameters, usable)
+    cleaned = clean_binary(binary, parameters, usable)
     labels, split_info = label_binary(cleaned, parameters)
     labels, filtering_info = filter_labels(labels, parameters, selected)
     info.update(split_info)
     info.update(filtering_info)
     info['foreground_after_cleanup'] = int(np.count_nonzero(labels))
-    return labels, gray, selected, info
+    info['reliable_pixels'] = int(usable.sum())
+    info['unreliable_pixels'] = int(np.count_nonzero(selected & ~usable))
+    info['unreliable_percent'] = round(info['unreliable_pixels'] / max(int(selected.sum()), 1) * 100, 6)
+    if info['unreliable_pixels']:
+        info['unreliable_note'] = '分析已排除平场校正标记的不可靠像素；排除边缘只按ROI与图边判断'
+    return labels, gray, usable, info
 
 
 def mask_edit(labels, command, selected):
@@ -200,8 +208,10 @@ def mask_edit(labels, command, selected):
     return output
 
 
-def threshold_sweep(image, parameters, region, thresholds):
+def threshold_sweep(image, parameters, region, thresholds, reliable=None):
     selected = region_mask(image.size, region)
+    if reliable is not None:
+        selected = selected & np.asarray(reliable, dtype=bool)
     gray = channel_array(image, parameters['channel'])
     if parameters['sigma']:
         gray = ndi.gaussian_filter(gray, parameters['sigma'])

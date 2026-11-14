@@ -63,16 +63,62 @@ def touching(rng):
     }
 
 
+def illumination_shading(shape):
+    y, x = np.indices(shape)
+    shading = 0.45 + 0.55 * x / shape[1]
+    shading *= 0.85 + 0.15 * np.cos(y / shape[0] * math.pi)
+    return shading
+
+
+CHANNEL_RESPONSE = np.array([1.0, 0.86, 0.7])
+DARK_OFFSET = np.array([9.0, 8.0, 11.0])
+
+
 def illumination(rng):
     image, mask, details = isolated(rng)
-    rgb = np.asarray(image, dtype=float)
-    y, x = np.indices(rgb.shape[:2])
-    shading = 0.45 + 0.55 * x / rgb.shape[1]
-    shading *= 0.85 + 0.15 * np.cos(y / rgb.shape[0] * math.pi)
-    rgb *= shading[:, :, None]
-    noise = rng.normal(0, 2.5, rgb.shape[:2])
-    rgb += noise[:, :, None]
+    signal = np.asarray(image, dtype=float)
+    shading = illumination_shading(signal.shape[:2])
+    rgb = signal * shading[:, :, None] * CHANNEL_RESPONSE[None, None, :] + DARK_OFFSET[None, None, :]
+    rgb += rng.normal(0, 2.0, signal.shape[:2])[:, :, None]
     return Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8)), mask, details
+
+
+def flat_dark_references(rng, shape):
+    """Same-size flat and dark fields with channel response and sensor defects."""
+    shading = illumination_shading(shape)
+    noise = rng.normal(0, 1.2, shape)
+    flat = 236 * shading[:, :, None] * CHANNEL_RESPONSE[None, None, :] + DARK_OFFSET[None, None, :]
+    flat += noise[:, :, None]
+    flat[24, 30] = 255
+    flat[shape[0] // 3:shape[0] // 3 + 14, shape[1] - 40:shape[1] - 26] = 255
+    dark = np.full(shape + (3,), 10.0, dtype=float) + rng.normal(0, 0.6, shape + (3,))
+    dark[40, 60] = [255, 255, 255]
+    near_dead = np.zeros(shape, dtype=bool)
+    near_dead[shape[0] - 90:shape[0] - 78, shape[1] - 120:shape[1] - 100] = True
+    flat[near_dead] = dark[near_dead] + 0.6
+    return (
+        Image.fromarray(np.clip(flat, 0, 255).astype(np.uint8)),
+        Image.fromarray(np.clip(dark, 0, 255).astype(np.uint8)),
+    )
+
+
+def generate_flatfield_references(seed=19):
+    """Illumination demo plus same-size flat/dark references for the UI workflow."""
+    rng = np.random.default_rng(seed)
+    image, mask, details = illumination(rng)
+    flat, dark = flat_dark_references(rng, (image.height, image.width))
+    details.update({
+        'name': '光照不均 · 平场参考演示',
+        'kind': 'flatfield',
+        'seed': seed,
+        'synthetic': True,
+        'note': '同尺寸明场与暗场参考含通道响应差异、坏点、饱和和响应过低区域',
+    })
+    return (
+        image, mask, details,
+        flat, dict(details, name='明场参考 · 合成演示', kind='flatfield-reference', reference='flat'),
+        dark, dict(details, name='暗场参考 · 合成演示', kind='flatfield-reference', reference='dark'),
+    )
 
 
 def fluorescence(rng):

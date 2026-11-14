@@ -16,7 +16,7 @@
   <select id="demoKind" aria-label="演示样本类型">
     <option value="isolated">离散微球</option><option value="touching">粘连微球</option>
     <option value="illumination">不均匀照明</option><option value="fluorescence">荧光颗粒</option>
-    <option value="fibers">取向纤维</option><option value="porous">多孔材料</option>
+    <option value="fibers">取向纤维</option><option value="porous">多孔材料</option><option value="flatfield">光照不均+明暗场参考</option>
   </select>
   <button id="demo">载入演示</button>
   <label class="primary upload">＋ 导入图像<input id="upload" type="file" accept="image/*" multiple hidden></label>
@@ -34,7 +34,7 @@
 </aside>
 <section class="workspace">
   <div class="title"><div><div class="eyebrow">MICROSTRUCTURE · SEGMENT · MEASURE</div><h1 id="name">从图像，读懂微观结构。</h1></div><div class="sample-actions"><span id="size" class="muted"></span><button id="metadata">样本信息</button><button id="duplicate">复制</button><button id="archive">归档</button></div></div>
-  <div class="toolbar"><div id="tabs"><button data-view="working" class="active">当前图像</button><button data-view="original">原始图像</button><button data-view="overlay">测量叠加</button><button data-view="mask">二值掩膜</button><button data-view="labels">彩色实例</button><button data-view="reference">参考掩膜</button></div><button id="fit">适应画布</button></div>
+  <div class="toolbar"><div id="tabs"><button data-view="working" class="active">当前图像</button><button data-view="original">原始图像</button><button data-view="overlay">测量叠加</button><button data-view="mask">二值掩膜</button><button data-view="labels">彩色实例</button><button data-view="reference">参考掩膜</button><button data-view="unreliable" id="unreliableTab" hidden>不可靠区域</button></div><button id="fit">适应画布</button></div>
   <div class="canvas-tools"><label>画布工具<select id="canvasMode"><option value="pan">平移查看</option><option value="pick">选取颗粒</option><option value="rectangle">矩形分析区域</option><option value="polygon">多边形分析区域</option><option value="line">测量线段</option><option value="angle">测量角度</option><option value="measure_polygon">测量多边形</option><option value="point">点标记</option><option value="profile">强度剖面</option><option value="add">添加掩膜区域</option><option value="erase">擦除掩膜区域</option><option value="remove_object">删除掩膜颗粒</option><option value="merge">连接掩膜颗粒</option></select></label><button id="finishDrawing">完成绘制</button><button id="cancelDrawing">取消绘制</button><button id="resetROI">全图分析</button><span id="pointCount" class="muted"></span></div>
   <div id="viewport"><div id="empty"><div class="orb">◌</div><h2>探索每一个颗粒</h2><p>导入图像或载入自带参考掩膜的演示样本</p><p class="muted">本地图像处理 · 无需账号或密钥</p></div><canvas id="canvas" hidden aria-label="图像分析画布"></canvas></div>
   <div class="metrics"><div><span>纳入颗粒 / 全部检测</span><strong id="count">—</strong></div><div><span>平均等效直径</span><strong id="diameter">—</strong></div><div><span>面积覆盖率</span><strong id="coverage">—</strong></div><div><span>标定与单位</span><strong id="unit">px</strong></div></div>
@@ -52,7 +52,7 @@
   <details><summary>高级分割参数</summary><div class="two"><label>局部窗口<input id="adaptive_window" type="number" min="3" max="301" step="2" value="41"></label><label>局部偏移<input id="adaptive_offset" type="number" value="10"></label></div><label>灰度分位数<input id="percentile" type="number" min="0" max="100" value="25"></label><div class="two"><label>开运算半径<input id="opening" type="number" min="0" max="20" value="0"></label><label>闭运算半径<input id="closing" type="number" min="0" max="20" value="0"></label></div><label>连通性<select id="connectivity"><option value="8">8邻域</option><option value="4">4邻域</option></select></label></details>
   <label class="check"><input id="fill_holes" type="checkbox" checked>填充内部孔洞</label><label class="check"><input id="exclude_edge" type="checkbox" checked>排除接触图边和ROI边界的颗粒</label><label class="check"><input id="split_touching" type="checkbox">分离粘连颗粒</label><label>分离种子间距 px<input id="seed_distance" type="number" min="2" max="100" value="12"></label>
   <button id="run" class="primary wide">▶ 运行图像分析</button>
-  <div class="section-buttons"><button id="calibrate">尺寸标定</button><button id="preprocess">图像预处理</button><button id="filterMeasurements">测量值筛选</button><button id="saveRecipe">保存分析配方</button><button id="export">导出与报告</button><label class="file-label">上传参考掩膜<input id="referenceFile" type="file" accept="image/*" hidden></label></div>
+  <div class="section-buttons"><button id="calibrate">尺寸标定</button><button id="preprocess">图像预处理</button><button id="flatfield">平场光照校正</button><button id="filterMeasurements">测量值筛选</button><button id="saveRecipe">保存分析配方</button><button id="export">导出与报告</button><label class="file-label">上传参考掩膜<input id="referenceFile" type="file" accept="image/*" hidden></label></div>
   <div class="notice" id="sampleInfo">所有处理在本机执行。请检查分割结果后使用测量值。</div>
 </aside>
 </main>

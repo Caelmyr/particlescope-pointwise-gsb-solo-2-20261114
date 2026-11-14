@@ -58,6 +58,12 @@ def image_response(image):
     return Response(png_bytes(image), mimetype='image/png', headers={'Cache-Control': 'no-store'})
 
 
+def analysis_region(store, sample_id, meta):
+    """ROI restricted to pixels without an unreliable-correction flag."""
+    from .imaging import region_mask
+    return region_mask((meta['width'], meta['height']), meta['roi'], store.reliable_mask(sample_id))
+
+
 def create_api(store, service, recipes, jobs):
     api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -107,6 +113,23 @@ def create_api(store, service, recipes, jobs):
         store.json_write(store.sample_dir(meta['id']) / 'demo.json', details)
         return jsonify(meta), 201
 
+    @api.post('/demo/flatfield')
+    def import_flatfield_demo():
+        from .synthetic import generate_flatfield_references
+        image, truth, details, flat, flat_details, dark, dark_details = generate_flatfield_references()
+        created = []
+        for picture, info in ((image, details), (flat, flat_details), (dark, dark_details)):
+            meta = store.import_image(io.BytesIO(png_bytes(picture)), info['name'])
+            store.json_write(store.sample_dir(meta['id']) / 'demo.json', info)
+            created.append(meta)
+        service.import_reference(created[0]['id'], io.BytesIO(png_bytes(truth)))
+        return jsonify({
+            'sample': created[0],
+            'flat': created[1],
+            'dark': created[2],
+            'details': details,
+        }), 201
+
     @api.get('/samples/<key>')
     def sample(key):
         with store.lock:
@@ -130,7 +153,7 @@ def create_api(store, service, recipes, jobs):
     @api.get('/samples/<key>/image/<kind>')
     def sample_image(key, kind):
         path = store.sample_dir(key)
-        if kind in ('original', 'working', 'thumb', 'reference'):
+        if kind in ('original', 'working', 'thumb', 'reference', 'unreliable'):
             target = path / (kind + '.png')
         elif kind in ('overlay', 'mask', 'labels'):
             analysis_id = request.args.get('analysis_id')
@@ -203,7 +226,7 @@ def create_api(store, service, recipes, jobs):
     def intensity_histogram(key):
         with store.lock:
             meta = store.meta(key)
-            return jsonify(image_histogram(store.working_image(key), meta['roi']))
+            return jsonify(image_histogram(store.working_image(key), meta['roi'], store.reliable_mask(key)))
 
     @api.get('/samples/<key>/quality')
     def quality(key):
@@ -273,7 +296,7 @@ def create_api(store, service, recipes, jobs):
     def spatial(key):
         with store.lock:
             report = service.require_result(key)
-            selected = region_mask((report['image_width'], report['image_height']), report['roi'])
+            selected = region_mask((report['image_width'], report['image_height']), report['roi'], store.reliable_mask(key))
             columns = v.integer(request.args.get('columns', 6), '格网列数', 2, 30)
             rows_count = v.integer(request.args.get('rows', 4), '格网行数', 2, 30)
             return jsonify(spatial_report(report, selected, columns, rows_count))
@@ -294,7 +317,7 @@ def create_api(store, service, recipes, jobs):
             report = service.require_result(key)
             center = v.point(data.get('center'), report['image_width'], report['image_height'])
             bins = v.integer(data.get('bins', 12), '环带数', 3, 100)
-            selected = region_mask((report['image_width'], report['image_height']), report['roi'])
+            selected = region_mask((report['image_width'], report['image_height']), report['roi'], store.reliable_mask(key))
             return jsonify(radial_density(included_rows(report), center, selected, report['scale'], bins))
 
     @api.get('/samples/<key>/pair-correlation')
@@ -315,13 +338,13 @@ def create_api(store, service, recipes, jobs):
         offset = v.integer(request.args.get('distance', 1), '像素偏移', 1, 50)
         with store.lock:
             meta = store.meta(key)
-            return jsonify(texture_report(store.working_image(key), meta['roi'], levels, offset))
+            return jsonify(texture_report(store.working_image(key), analysis_region(store, key, meta), levels, offset))
 
     @api.get('/samples/<key>/spectrum')
     def spectrum(key):
         with store.lock:
             meta = store.meta(key)
-            return jsonify(radial_power_spectrum(store.working_image(key), meta['roi']))
+            return jsonify(radial_power_spectrum(store.working_image(key), analysis_region(store, key, meta)))
 
     @api.get('/samples/<key>/color')
     def colors(key):
@@ -329,8 +352,8 @@ def create_api(store, service, recipes, jobs):
             meta = store.meta(key)
             image = store.working_image(key)
             return jsonify({
-                'summary': color_summary(image, meta['roi']),
-                'correlation': channel_correlations(image, meta['roi']),
+                'summary': color_summary(image, analysis_region(store, key, meta)),
+                'correlation': channel_correlations(image, analysis_region(store, key, meta)),
             })
 
     @api.post('/samples/<key>/dominant-colors')
@@ -339,7 +362,7 @@ def create_api(store, service, recipes, jobs):
         count = v.integer(data.get('clusters', 4), '颜色数', 2, 10)
         with store.lock:
             meta = store.meta(key)
-            return jsonify(dominant_colors(store.working_image(key), meta['roi'], count))
+            return jsonify(dominant_colors(store.working_image(key), analysis_region(store, key, meta), count))
 
     @api.post('/samples/<key>/color-distance')
     def color_mask(key):
@@ -351,7 +374,7 @@ def create_api(store, service, recipes, jobs):
         tolerance = v.real(data.get('tolerance', 20), '色差容限', 0, 200)
         with store.lock:
             meta = store.meta(key)
-            mask, info = color_distance(store.working_image(key), meta['roi'], rgb, tolerance)
+            mask, info = color_distance(store.working_image(key), analysis_region(store, key, meta), rgb, tolerance)
             store.image_write(store.sample_dir(key) / 'color-mask.png', Image.fromarray(mask.astype(np.uint8) * 255))
             return jsonify(info)
 
@@ -362,7 +385,7 @@ def create_api(store, service, recipes, jobs):
         percentile = v.real(data.get('background_percentile', 10), '背景分位数', 0, 50)
         with store.lock:
             meta = store.meta(key)
-            return jsonify(fluorescence_metrics(store.working_image(key), meta['roi'], channel, percentile))
+            return jsonify(fluorescence_metrics(store.working_image(key), analysis_region(store, key, meta), channel, percentile))
 
     @api.get('/samples/<key>/morphology')
     def morphology(key):
@@ -371,7 +394,7 @@ def create_api(store, service, recipes, jobs):
             labels = service.labels(key)
             ids = [r['id'] for r in included_rows(report)]
             binary = np.isin(labels, ids) & (labels > 0)
-            selected = region_mask((report['image_width'], report['image_height']), report['roi'])
+            selected = region_mask((report['image_width'], report['image_height']), report['roi'], store.reliable_mask(key))
             return jsonify({
                 'porosity': porosity_report(binary, selected),
                 'thickness': distance_thickness(binary, selected, report['scale']),
@@ -388,7 +411,7 @@ def create_api(store, service, recipes, jobs):
             report = service.require_result(key)
             labels = service.labels(key)
             ids = [r['id'] for r in included_rows(report)]
-            selected = region_mask((report['image_width'], report['image_height']), report['roi'])
+            selected = region_mask((report['image_width'], report['image_height']), report['roi'], store.reliable_mask(key))
             return jsonify(granulometry((labels > 0) & np.isin(labels, ids), selected, radii))
 
     @api.get('/samples/<key>/skeleton')
@@ -397,7 +420,7 @@ def create_api(store, service, recipes, jobs):
             report = service.require_result(key)
             labels = service.labels(key)
             ids = [r['id'] for r in included_rows(report)]
-            selected = region_mask((report['image_width'], report['image_height']), report['roi'])
+            selected = region_mask((report['image_width'], report['image_height']), report['roi'], store.reliable_mask(key))
             mask, details = skeleton_report((labels > 0) & np.isin(labels, ids), selected, report['scale'])
             store.image_write(store.sample_dir(key) / 'skeleton.png', Image.fromarray(mask.astype(np.uint8) * 255))
             return jsonify(details)
@@ -407,7 +430,7 @@ def create_api(store, service, recipes, jobs):
         with store.lock:
             meta = store.meta(key)
             image = store.working_image(key)
-            selected = region_mask(image.size, meta['roi'])
+            selected = region_mask(image.size, meta['roi'], store.reliable_mask(key))
             return jsonify(minkowski_curve(channel_array(image), selected, np.linspace(20, 230, 12)))
 
     @api.get('/samples/<key>/annotations')
@@ -439,6 +462,24 @@ def create_api(store, service, recipes, jobs):
             meta = store.meta(key)
             image = draw_annotations(store.working_image(key), store.annotations(key), meta['calibration'])
             return image_response(image)
+
+    @api.post('/samples/<key>/flatfield/preview')
+    def flatfield_preview(key):
+        return jsonify(service.flatfield_preview(key, body()))
+
+    @api.post('/samples/<key>/flatfield')
+    def flatfield_apply(key):
+        data = body()
+        if v.flatfield_correction(data)['sample_id'] != key:
+            raise v.ValidationError('样本编号与路径不一致')
+        return jsonify(service.apply_flatfield(key, data, expected(data))), 201
+
+    @api.get('/samples/<key>/unreliable')
+    def unreliable_mask(key):
+        path = store.sample_dir(key) / 'unreliable.png'
+        if not path.exists():
+            raise v.ValidationError('该样本没有不可靠区域记录')
+        return send_file(path, max_age=0)
 
     @api.post('/samples/<key>/reference')
     def upload_reference(key):

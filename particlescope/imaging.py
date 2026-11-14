@@ -164,22 +164,31 @@ def apply_operation(image, parameters):
     raise ValidationError('不支持的图像操作')
 
 
-def region_mask(size, region):
+def region_mask(size, region, reliable=None):
+    if isinstance(region, np.ndarray):
+        selected = np.asarray(region, dtype=bool)
+        if selected.shape != (size[1], size[0]):
+            raise ValidationError('区域掩膜尺寸与图像不一致')
+        return selected if reliable is None else selected & np.asarray(reliable, dtype=bool)
     image = Image.new('1', size, 0)
     draw = ImageDraw.Draw(image)
     kind = region['type']
     if kind == 'full':
-        return np.ones((size[1], size[0]), dtype=bool)
-    if kind in ('rectangle', 'ellipse'):
+        selected = np.ones((size[1], size[0]), dtype=bool)
+    elif kind in ('rectangle', 'ellipse'):
         x, y = region['x'], region['y']
         box = (x, y, x + region['width'] - 1, y + region['height'] - 1)
         if kind == 'ellipse':
             draw.ellipse(box, fill=1)
         else:
             draw.rectangle(box, fill=1)
+        selected = np.asarray(image, dtype=bool)
     else:
         draw.polygon([tuple(p) for p in region['points']], fill=1)
-    return np.asarray(image, dtype=bool)
+        selected = np.asarray(image, dtype=bool)
+    if reliable is not None:
+        selected = selected & np.asarray(reliable, dtype=bool)
+    return selected
 
 
 def intensity_profile(image, start, end, channel='gray', samples=200, line_width=1):
@@ -209,11 +218,13 @@ def intensity_profile(image, start, end, channel='gray', samples=200, line_width
     }
 
 
-def image_histogram(image, region=None):
+def image_histogram(image, region=None, reliable=None):
     if region is None:
         selected = np.ones((image.height, image.width), dtype=bool)
     else:
         selected = region_mask(image.size, region)
+    if reliable is not None:
+        selected = selected & np.asarray(reliable, dtype=bool)
     result = {}
     for name in ['gray', 'red', 'green', 'blue']:
         values = channel_array(image, name)[selected].astype(np.uint8)

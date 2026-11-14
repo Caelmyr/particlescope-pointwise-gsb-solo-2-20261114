@@ -153,6 +153,9 @@ def analysis_bundle(store, service, sample_id):
             for name in ['mask.png', 'overlay.png', 'labels.png']:
                 archive.write(path / name, name)
             archive.write(store.sample_dir(sample_id) / 'working.png', 'working.png')
+            unreliable = store.sample_dir(sample_id) / 'unreliable.png'
+            if unreliable.exists():
+                archive.write(unreliable, 'unreliable-regions.png')
             archive.writestr('README.txt', 'ParticleScope analysis export. Coordinates are image pixels.\nPhysical lengths use calibration in sample.json.\nVolume weighting assumes equivalent spheres.\n')
         return stream.getvalue()
 

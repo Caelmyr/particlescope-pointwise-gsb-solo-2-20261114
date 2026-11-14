@@ -120,7 +120,9 @@ async function selectSample(key){
   state.sample=data.meta;state.view='working';state.points=[];loadedImage=null;resetView();
   $('name').textContent=data.meta.name;$('size').textContent=`${data.meta.width} × ${data.meta.height} px`;
   $('archive').textContent=data.meta.archived?'恢复':'归档';
-  $('sampleInfo').textContent=`分析区域：${data.meta.roi.type}；标定：1 px = ${fmt(data.meta.calibration.scale)} ${data.meta.calibration.unit}。图像版本 ${data.meta.image_revision}，修订 ${data.meta.revision}。`;
+  $('sampleInfo').textContent=`分析区域：${data.meta.roi.type}；标定：1 px = ${fmt(data.meta.calibration.scale)} ${data.meta.calibration.unit}。图像版本 ${data.meta.image_revision}，修订 ${data.meta.revision}。${data.meta.unreliable_mask?'不可靠区域已记录，分析时排除。':''}`;
+  $('unreliableTab').hidden=!data.meta.unreliable_mask;
+  if(!data.meta.unreliable_mask&&state.view==='unreliable')state.view='working';
   state.result=await request(url('result'));
   if(token!==state.loadToken)return;
   if(state.result?.parameters)setParameters(state.result.parameters);
@@ -131,7 +133,8 @@ async function selectSample(key){
 async function refreshSample(){
   const key=requireSample().id;const data=await request(`/api/samples/${key}`);state.sample=data.meta;
   $('name').textContent=data.meta.name;$('size').textContent=`${data.meta.width} × ${data.meta.height} px`;
-  $('sampleInfo').textContent=`分析区域：${data.meta.roi.type}；1 px = ${fmt(data.meta.calibration.scale)} ${data.meta.calibration.unit}；图像版本 ${data.meta.image_revision}，修订 ${data.meta.revision}。`;
+  $('sampleInfo').textContent=`分析区域：${data.meta.roi.type}；1 px = ${fmt(data.meta.calibration.scale)} ${data.meta.calibration.unit}；图像版本 ${data.meta.image_revision}，修订 ${data.meta.revision}。${data.meta.unreliable_mask?'不可靠区域已记录，分析时排除。':''}`;
+  $('unreliableTab').hidden=!data.meta.unreliable_mask;
   state.result=await request(url('result'));renderResult();await loadLibrary();
 }
 function showImage(){
@@ -141,7 +144,7 @@ function showImage(){
   const image=new Image();const token=state.sample.id+state.view+state.sample.revision;
   $('canvas').dataset.token=token;
   image.onload=()=>{if($('canvas').dataset.token!==token)return;loadedImage=image;$('canvas').width=image.naturalWidth;$('canvas').height=image.naturalHeight;drawCanvas()};
-  image.onerror=()=>status(state.view==='reference'?'当前样本没有参考掩膜':'图像尚未生成，请先运行分析',true);
+  image.onerror=()=>status(state.view==='reference'?'当前样本没有参考掩膜':state.view==='unreliable'?'当前样本没有不可靠区域记录':'图像尚未生成，请先运行分析',true);
   image.src=url(`image/${state.view}`)+`?v=${state.sample.revision}`;
 }
 function drawCanvas(){
@@ -225,7 +228,14 @@ async function mutate(message,fn){
 }
 $('run').onclick=guard(async()=>{requireSample();await mutate('正在分割、测量并保存结果…',()=>post(url('analyze'),{...parameters(),revision:state.sample.revision}));state.view='overlay';showImage();status(`分析完成：${state.result.count} 个颗粒，覆盖率 ${fmt(state.result.coverage)}%`)});
 document.querySelectorAll('[data-view]').forEach(button=>button.onclick=guard(()=>{requireSample();if(['overlay','mask','labels'].includes(button.dataset.view))requireResult();state.view=button.dataset.view;showImage()}));
-$('demo').onclick=guard(async()=>{const sample=await task('生成演示图像…',()=>post('/api/demo',{kind:$('demoKind').value}));await loadLibrary(sample.id);if($('demoKind').value==='fluorescence')setParameters({polarity:'light',channel:'green',method:'otsu'});else if($('demoKind').value==='porous')setParameters({polarity:'light',method:'otsu',fill_holes:false});status('演示已载入，自带参考掩膜，可分析后评估IoU')});
+$('demo').onclick=guard(async()=>{
+  if($('demoKind').value==='flatfield'){
+    const result=await task('生成光照不均样本与明暗场参考…',()=>post('/api/demo/flatfield',{}));
+    await loadLibrary(result.sample.id);setParameters({polarity:'dark',method:'otsu'});
+    status(`已载入「${result.sample.name}」，样本库同时生成同尺寸明场与暗场参考；打开“平场光照校正”预览并另存`);return;
+  }
+  const sample=await task('生成演示图像…',()=>post('/api/demo',{kind:$('demoKind').value}));await loadLibrary(sample.id);if($('demoKind').value==='fluorescence')setParameters({polarity:'light',channel:'green',method:'otsu'});else if($('demoKind').value==='porous')setParameters({polarity:'light',method:'otsu',fill_holes:false});status('演示已载入，自带参考掩膜，可分析后评估IoU')
+});
 $('upload').onchange=guard(async e=>{
   if(!e.target.files.length)return;const files=[...e.target.files];e.target.value='';
   const form=new FormData();for(const file of files)form.append('files',file);if($('projectFilter').value)form.append('project_id',$('projectFilter').value);
@@ -251,6 +261,71 @@ $('preprocess').onclick=guard(()=>{
   requireSample();const body=openDialog('图像预处理');body.append(el('p','每次处理都保留之前的图像，可在历史中恢复。旋转、翻转、裁切和缩放会清空当前标定、ROI和人工标注。','hint'));
   const fields=[sel('operation','图像操作','gaussian',state.catalog.preprocessing.map(p=>[p.key,p.label])),num('amount','强度 / Gamma / 高斯σ',1,.01,100),num('radius','滤波 / 背景半径',3,1,100),sel('channel','通道','gray',[['gray','灰度'],['red','红'],['green','绿'],['blue','蓝'],['hue','色相'],['saturation','饱和度'],['value','明度']]),num('angle','旋转角度',90,-360,360),sel('direction','翻转方向','horizontal',[['horizontal','水平'],['vertical','垂直']]),num('width','缩放宽度',state.sample.width,16,8000),num('height','缩放高度',state.sample.height,16,8000),arr('crop_values','裁切 [x,y,width,height]',[0,0,state.sample.width,state.sample.height])];
   body.append(makeForm(fields,'应用到当前图像',async data=>{const [x,y,width,height]=data.crop_values;data.crop={x,y,width,height};await mutate('正在处理图像…',()=>post(url('enhance'),{...data,revision:state.sample.revision}));$('dialog').close()}));
+});
+$('flatfield').onclick=guard(()=>{
+  requireSample();const sample=state.sample;const body=openDialog('平场照明校正 · 明场与暗场参考');
+  body.append(el('p','选择与样本同尺寸的明场（无颗粒均匀视野）和暗场（遮光）参考，逐颜色通道扣除照明不均和相机暗电平。不是用背景平滑猜测照明，因此大颗粒不会被当作背景。坏点、饱和与接近无响应的像素会标为不可靠区域并排除，颜色通道各自的响应差异保留。','hint'));
+  const layout=el('div',undefined,'dialog-grid'),controls=el('div'),output=el('div',undefined,'tool-output');
+  const candidates=()=>state.samples.filter(s=>!s.archived&&s.id!==sample.id&&s.width===sample.width&&s.height===sample.height);
+  const list=candidates();
+  if(!list.length){controls.append(el('p',`样本库中没有其他 ${sample.width}×${sample.height} 的图像可作参考。请先导入同尺寸的明场和暗场图。`,'hint'));layout.append(controls,output);body.append(layout);return}
+  const options=list.map(s=>[s.id,`${s.name}${s.analysis_id?' · 已分析':''}`]);
+  const findByName=pattern=>list.find(s=>pattern.test(s.name));
+  const flatDefault=(findByName(/明场|flat/i)||list[0]).id;
+  const darkDefault=(findByName(/暗场|dark/i)||list.find(s=>s.id!==flatDefault)||list[0]).id;
+  const fields=[
+    sel('flat_id','明场参考（均匀照明）',flatDefault,options),
+    sel('dark_id','暗场参考（遮光）',darkDefault,options),
+    num('saturation_level','饱和阈值',250,1,255),
+    num('min_response','最小参考响应',1,0,255),
+    num('min_response_fraction','响应比例下限',0.05,0,1),
+    num('max_gain','最大增益',20,1,1000),
+    num('bad_pixel_sigma','坏点判定倍数',6,1,50),
+    num('margin','不可靠区域外扩 px',1,0,20),
+    txt('name','新样本名称',sample.name.slice(0,120)+' · 平场校正'),
+  ];
+  const payload=()=>{const data={sample_id:sample.id,parameters:{saturation_level:Number($('ff_saturation_level').value),min_response:Number($('ff_min_response').value),min_response_fraction:Number($('ff_min_response_fraction').value),max_gain:Number($('ff_max_gain').value),bad_pixel_sigma:Number($('ff_bad_pixel_sigma').value),margin:Number($('ff_margin').value)},flat_id:$('ff_flat_id').value,dark_id:$('ff_dark_id').value};return data};
+  const form=el('form',undefined,'form');
+  for(const field of fields){const wrapper=formField(field);const input=wrapper.querySelector('[name]');input.id='ff_'+field.name;form.append(wrapper)}
+  form.querySelectorAll('select').forEach(input=>input.id='ff_'+input.name);
+  const preview=el('button','预览校正结果');preview.type='button';
+  const apply=el('button','另存为可分析新样本','primary');apply.type='button';
+  form.append(preview,apply,el('p','','dialog-error'));
+  controls.append(form);
+  const runPreview=guard(async()=>{
+    const error=form.querySelector('.dialog-error');error.textContent='';
+    output.replaceChildren(el('p','正在计算校正预览…','muted'));
+    const data=payload();data.save=false;
+    try{
+      const result=await task('计算平场校正预览…',()=>post(url('flatfield/preview'),data));
+      output.replaceChildren();
+      const figures=el('div',undefined,'flatfield-figures');
+      const figure=(title,source)=>{const card=el('div',undefined,'flatfield-card');card.append(el('h3',title));const img=el('img');img.src=source;img.alt=title;card.append(img);return card};
+      figures.append(figure('校正预览 · 洋红为不可靠区域',result.preview_png),figure('不可靠区域（白）',result.unreliable_png));
+      output.append(figures);
+      const cards=el('div',undefined,'metric-grid');
+      for(const [key,value] of [['unreliable_percent','不可靠像素 %'],['clipped_pixels','截断像素'],['reliable_percent','可靠像素 %']]){const card=el('div',undefined,'metric-card');card.append(el('small',value),el('strong',fmt(result[key])));cards.append(card)}
+      output.append(cards);
+      const table=el('div',undefined,'table-wrap');const grid=el('table'),head=el('thead'),row=el('tr');
+      for(const title of ['通道','暗场中位','明场中位','参考响应中位','坏点','饱和','响应过低','不可靠合计'])row.append(el('th',title));
+      head.append(row);grid.append(head);const tbody=el('tbody');
+      for(const channel of result.channels){const tr=el('tr');for(const value of [channel.channel,channel.median_dark,channel.median_flat,channel.median_response,channel.bad_pixels,channel.saturated_pixels,channel.low_response_pixels,channel.unreliable_pixels])tr.append(el('td',fmt(value)));tbody.append(tr)}
+      grid.append(tbody);table.append(grid);output.append(el('h3','逐颜色通道统计'),table,el('p',result.warning,'hint'));
+      status('平场校正预览完成，请检查不可靠区域后另存');
+    }catch(e){error.textContent=e.message;output.replaceChildren();throw e}
+  });
+  preview.onclick=runPreview;
+  apply.onclick=guard(async()=>{
+    const error=form.querySelector('.dialog-error');error.textContent='';
+    const data=payload();data.name=$('ff_name').value;data.save=true;data.revision=sample.revision;
+    try{
+      const result=await task('另存平场校正样本…',()=>post(url('flatfield'),data));
+      await loadLibrary(result.sample.id);
+      state.view='working';showImage();$('dialog').close();
+      status(`已另存新样本「${result.sample.name}」，不可靠区域 ${fmt(result.details.unreliable_percent)}% 在分析中排除`);
+    }catch(e){error.textContent=e.message;throw e}
+  });
+  layout.append(controls,output);body.append(layout);
 });
 $('filterMeasurements').onclick=guard(()=>{
   requireResult();const body=openDialog('筛选测量结果');body.append(el('p','筛选不会更改原始检测掩膜，会生成新的分析记录；留空即不限制。','hint'));
@@ -330,6 +405,7 @@ function openToolbox(group='全部'){
   body.append(nav);const grid=el('div',undefined,'tool-list');for(const tool of state.catalog.tools.filter(t=>group==='全部'||t.group===group)){const button=el('button',undefined,'tool-card');button.append(el('small',tool.group),el('b',tool.label),el('span',tool.note));button.onclick=guard(()=>openTool(tool.key));grid.append(button)}body.append(grid);
 }
 function openTool(key){
+  if(key==='flatfield'){$('dialog').close();$('flatfield').click();return}
   requireSample();const tool=state.catalog.tools.find(t=>t.key===key);const body=openDialog(tool.label);const layout=el('div',undefined,'dialog-grid');const controls=el('div'),output=el('div',undefined,'tool-output');controls.append(el('p',tool.note,'hint'));
   controls.append(makeForm(tool.fields,'运行 '+tool.label,async data=>{
     output.replaceChildren(el('p','正在计算…','muted'));

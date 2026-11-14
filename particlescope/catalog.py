@@ -66,6 +66,11 @@ def tool_catalog():
         note='显示清晰度、曝光截断、照明变化和对比度指标。诊断是启发式提示。',
     ))
     tools.append(tool(
+        'flatfield', '平场与暗场参考校正', '图像', 'flatfield',
+        note='在样本库选择同尺寸明场与暗场参考，逐颜色通道校正照明不均；坏点、饱和和接近无响应的像素标为不可靠区域，可另存为独立新样本。',
+        output='image',
+    ))
+    tools.append(tool(
         'histogram', '颜色与灰度直方图', '图像', 'histogram',
         note='统计当前ROI中的像素，不依赖颗粒分析。',
     ))

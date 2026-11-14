@@ -43,6 +43,11 @@ def metadata_section(meta, result):
         ('标签', ' / '.join(meta.get('tags', []))),
         ('样本说明', meta.get('notes', '')),
     ]
+    details = result.get('details') or {}
+    if details.get('unreliable_pixels') is not None:
+        total = max(int(result.get('image_width', 0)) * int(result.get('image_height', 0)), 1)
+        percent = details.get('unreliable_percent', details['unreliable_pixels'] / total * 100)
+        pairs.append(('不可靠像素', f'{details["unreliable_pixels"]} px（{number(percent)}%），已从分析中排除'))
     return html_table(['项目', '内容'], pairs)
 
 

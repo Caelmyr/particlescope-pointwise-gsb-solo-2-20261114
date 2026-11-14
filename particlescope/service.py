@@ -1,12 +1,15 @@
 from copy import deepcopy
+import io
+import shutil
 import uuid
 import numpy as np
 from PIL import Image
 from . import validation as v
 from .imaging import apply_operation, region_mask, channel_array
+from .flatfield import correct_flatfield, data_url
+from .rendering import png_bytes, overlay_image, label_image
 from .segmentation import segment, mask_edit
 from .measurements import measure_labels, summarize, apply_filters
-from .rendering import overlay_image, label_image
 from .annotations import recalibrate_annotations
 
 
@@ -37,7 +40,8 @@ class AnalysisService:
                 from .storage import ConflictError
                 raise ConflictError('样本已修改，请刷新')
             image = self.store.working_image(sample_id)
-            labels, gray, selected, details = segment(image, parameters, meta['roi'])
+            reliable = self.store.reliable_mask(sample_id)
+            labels, gray, selected, details = segment(image, parameters, meta['roi'], reliable)
             rows = measure_labels(labels, gray, meta['calibration'], selected)
             return self.save_analysis(
                 sample_id,
@@ -55,7 +59,10 @@ class AnalysisService:
             directory = sample_path / 'analyses' / analysis_id
             directory.mkdir()
             image = self.store.working_image(sample_id)
+            reliable = self.store.reliable_mask(sample_id)
             selected = region_mask(image.size, meta['roi'])
+            if reliable is not None:
+                selected &= reliable
             result = {
                 'id': analysis_id,
                 'sample_id': sample_id,
@@ -113,6 +120,9 @@ class AnalysisService:
             labels = self.labels(sample_id)
             image = self.store.working_image(sample_id)
             selected = region_mask(image.size, result['roi'])
+            reliable = self.store.reliable_mask(sample_id)
+            if reliable is not None:
+                selected &= reliable
             changed = mask_edit(labels, command, selected)
             gray = channel_array(image, result['parameters']['channel'])
             rows = measure_labels(changed, gray, meta['calibration'], selected)
@@ -204,7 +214,7 @@ class AnalysisService:
             labels = self.labels(sample_id)
             ids = [r['id'] for r in result['particles'] if r.get('included', True)]
             predicted = np.isin(labels, ids) & (labels > 0)
-            valid = region_mask((meta['width'], meta['height']), meta['roi'])
+            valid = region_mask((meta['width'], meta['height']), meta['roi'], self.store.reliable_mask(sample_id))
             from .boundaries import reference_boundary_report
             score = evaluate_reference(predicted, reference, valid)
             score.update(reference_boundary_report(predicted, reference, valid, result['scale']))
@@ -223,7 +233,88 @@ class AnalysisService:
             image = self.store.working_image(sample_id)
             if image.width * image.height > 4000000:
                 raise v.ValidationError('参数扫描限400万像素')
-            return threshold_sweep(image, parameters, meta['roi'], np.linspace(start, stop, steps))
+            return threshold_sweep(image, parameters, meta['roi'], np.linspace(start, stop, steps), self.store.reliable_mask(sample_id))
+
+    def flatfield_references(self, sample_id, flat_id, dark_id):
+        """Validate that both references exist and match the sample geometry."""
+        meta = self.store.meta(sample_id)
+        if flat_id == dark_id:
+            raise v.ValidationError('明场与暗场参考不能是同一张图')
+        for key, label in ((flat_id, '明场'), (dark_id, '暗场')):
+            reference_meta = self.store.meta(key)
+            if (reference_meta['width'], reference_meta['height']) != (meta['width'], meta['height']):
+                raise v.ValidationError(
+                    f'{label}参考必须与样本同尺寸：样本 {meta["width"]}×{meta["height"]}，'
+                    f'参考 {reference_meta["width"]}×{reference_meta["height"]}'
+                )
+
+    def flatfield_preview(self, sample_id, body):
+        command = v.flatfield_pair(body)
+        with self.store.lock:
+            self.flatfield_references(sample_id, command['flat_id'], command['dark_id'])
+            corrected = correct_flatfield(
+                self.store.working_image(sample_id),
+                self.store.working_image(command['flat_id']),
+                self.store.working_image(command['dark_id']),
+                command['parameters'],
+                self.store.reliable_mask(sample_id),
+            )
+            details = corrected['details']
+            details['preview_png'] = data_url(corrected['preview'])
+            details['unreliable_png'] = data_url(corrected['unreliable_mask'])
+            details['reference_names'] = {
+                'sample': self.store.meta(sample_id)['name'],
+                'flat': self.store.meta(command['flat_id'])['name'],
+                'dark': self.store.meta(command['dark_id'])['name'],
+            }
+            return details
+
+    def apply_flatfield(self, sample_id, body, expected_revision=None):
+        command = v.flatfield_correction(body)
+        with self.store.lock:
+            meta = self.store.meta(sample_id)
+            if expected_revision is not None and meta['revision'] != expected_revision:
+                from .storage import ConflictError
+                raise ConflictError('样本已修改，请刷新')
+            self.flatfield_references(sample_id, command['flat_id'], command['dark_id'])
+            corrected = correct_flatfield(
+                self.store.working_image(sample_id),
+                self.store.working_image(command['flat_id']),
+                self.store.working_image(command['dark_id']),
+                command['parameters'],
+                self.store.reliable_mask(sample_id),
+            )
+            name = command['name'] or meta['name'][:150] + ' · 平场校正'
+            created = self.store.import_image(
+                io.BytesIO(png_bytes(corrected['image'])),
+                name,
+                project_id=meta.get('project_id'),
+                unreliable_stream=io.BytesIO(png_bytes(corrected['unreliable_mask'])),
+                calibration=deepcopy(meta['calibration']),
+                provenance={
+                    'operation': 'flatfield_correction',
+                    'source_sample_id': sample_id,
+                    'flat_sample_id': command['flat_id'],
+                    'dark_sample_id': command['dark_id'],
+                    'details': corrected['details'],
+                    'note': '平场与暗场校正另存的独立样本；不可靠区域在分析时排除，未继承原样本的ROI与标注',
+                },
+            )
+            created = self.store.meta(created['id'])
+            created['tags'] = v.tags(meta.get('tags', []))
+            self.store.json_write(self.store.sample_dir(created['id']) / 'meta.json', created)
+            source_reference = self.store.json_read(self.store.sample_dir(sample_id) / 'reference.json')
+            if source_reference is not None and source_reference['image_revision'] == meta['image_revision']:
+                destination = self.store.sample_dir(created['id'])
+                shutil.copyfile(self.store.sample_dir(sample_id) / 'reference.png', destination / 'reference.png')
+                reference = dict(source_reference)
+                reference.update({
+                    'created_at': v.now(),
+                    'inherited_from': sample_id,
+                    'note': '参考掩膜继承自校正前样本，几何未改变；校正不移动颗粒位置',
+                })
+                self.store.json_write(destination / 'reference.json', reference)
+            return {'sample': self.store.meta(created['id']), 'details': corrected['details']}
 
     def sample_summary(self, sample_id):
         from .annotations import annotation_summary

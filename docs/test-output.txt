@@ -8,6 +8,9 @@ test_color_texture_and_profile (test_workflows.Workflows.test_color_texture_and_
 test_crofton_circle_approximation (test_workflows.Workflows.test_crofton_circle_approximation) ... ok
 test_export_contents_and_report (test_workflows.Workflows.test_export_contents_and_report) ... ok
 test_filter_preserves_detection_and_history (test_workflows.Workflows.test_filter_preserves_detection_and_history) ... ok
+test_flatfield_correction_removes_illumination (test_workflows.Workflows.test_flatfield_correction_removes_illumination) ... ok
+test_flatfield_marks_saturated_and_dead_pixels_unreliable (test_workflows.Workflows.test_flatfield_marks_saturated_and_dead_pixels_unreliable) ... ok
+test_flatfield_rejects_mismatched_reference (test_workflows.Workflows.test_flatfield_rejects_mismatched_reference) ... ok
 test_geometry_resets_roi_calibration_annotations (test_workflows.Workflows.test_geometry_resets_roi_calibration_annotations) ... ok
 test_input_validation (test_workflows.Workflows.test_input_validation) ... ok
 test_isolated_ground_truth (test_workflows.Workflows.test_isolated_ground_truth) ... ok
@@ -25,6 +28,6 @@ test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_recon
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 28 tests in 21.891s
 
 OK
