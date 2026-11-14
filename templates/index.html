@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>粒境 ParticleScope · 图像分析实验室</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">◉ <b>粒境</b><span>PARTICLE SCOPE <small>2.0</small></span></div>
+  <div class="tag">图像分析实验室</div>
+  <button id="tools">分析工具箱</button>
+  <button id="compare">样本对照</button>
+  <button id="batch">批量任务</button>
+  <select id="demoKind" aria-label="演示样本类型">
+    <option value="isolated">离散微球</option><option value="touching">粘连微球</option>
+    <option value="illumination">不均匀照明</option><option value="fluorescence">荧光颗粒</option>
+    <option value="fibers">取向纤维</option><option value="porous">多孔材料</option>
+  </select>
+  <button id="demo">载入演示</button>
+  <label class="primary upload">＋ 导入图像<input id="upload" type="file" accept="image/*" multiple hidden></label>
+</header>
+<main>
+<aside class="library">
+  <div class="eyebrow">SAMPLE LIBRARY</div>
+  <h2>样本库 <span id="total">0</span></h2>
+  <input id="search" type="search" placeholder="搜索名称、标签、说明" aria-label="搜索样本">
+  <select id="projectFilter" aria-label="筛选项目"><option value="">全部项目</option></select>
+  <div class="inline"><button id="newProject">＋ 新项目</button><button id="projectReport">项目报告</button></div>
+  <label class="check"><input type="checkbox" id="showArchived">显示已归档样本</label>
+  <p class="muted">勾选样本后可批量分析或比较</p>
+  <div id="library"></div>
+</aside>
+<section class="workspace">
+  <div class="title"><div><div class="eyebrow">MICROSTRUCTURE · SEGMENT · MEASURE</div><h1 id="name">从图像，读懂微观结构。</h1></div><div class="sample-actions"><span id="size" class="muted"></span><button id="metadata">样本信息</button><button id="duplicate">复制</button><button id="archive">归档</button></div></div>
+  <div class="toolbar"><div id="tabs"><button data-view="working" class="active">当前图像</button><button data-view="original">原始图像</button><button data-view="overlay">测量叠加</button><button data-view="mask">二值掩膜</button><button data-view="labels">彩色实例</button><button data-view="reference">参考掩膜</button></div><button id="fit">适应画布</button></div>
+  <div class="canvas-tools"><label>画布工具<select id="canvasMode"><option value="pan">平移查看</option><option value="pick">选取颗粒</option><option value="rectangle">矩形分析区域</option><option value="polygon">多边形分析区域</option><option value="line">测量线段</option><option value="angle">测量角度</option><option value="measure_polygon">测量多边形</option><option value="point">点标记</option><option value="profile">强度剖面</option><option value="add">添加掩膜区域</option><option value="erase">擦除掩膜区域</option><option value="remove_object">删除掩膜颗粒</option><option value="merge">连接掩膜颗粒</option></select></label><button id="finishDrawing">完成绘制</button><button id="cancelDrawing">取消绘制</button><button id="resetROI">全图分析</button><span id="pointCount" class="muted"></span></div>
+  <div id="viewport"><div id="empty"><div class="orb">◌</div><h2>探索每一个颗粒</h2><p>导入图像或载入自带参考掩膜的演示样本</p><p class="muted">本地图像处理 · 无需账号或密钥</p></div><canvas id="canvas" hidden aria-label="图像分析画布"></canvas></div>
+  <div class="metrics"><div><span>纳入颗粒 / 全部检测</span><strong id="count">—</strong></div><div><span>平均等效直径</span><strong id="diameter">—</strong></div><div><span>面积覆盖率</span><strong id="coverage">—</strong></div><div><span>标定与单位</span><strong id="unit">px</strong></div></div>
+  <div class="quick-tools"><button data-tool="statistics">粒径统计</button><button data-tool="spatial">空间分布</button><button data-tool="texture">纹理分析</button><button data-tool="quality">质量诊断</button><button data-tool="reference-score">参考评估</button><button data-tool="gallery">颗粒图册</button><button id="annotations">人工测量</button><button id="history">图像与分析历史</button></div>
+  <div class="results"><div class="result-head"><h2>颗粒测量明细</h2><div><select id="rowFilter" aria-label="结果显示范围"><option value="included">纳入统计</option><option value="all">全部颗粒</option><option value="excluded">已排除颗粒</option></select><select id="sortField" aria-label="排序指标"><option value="id">按编号</option><option value="diameter">按粒径</option><option value="area">按面积</option><option value="circularity">按圆度</option></select><a id="csv" class="disabled">↓ CSV</a></div></div><div class="table-wrap"><table><thead><tr><th>编号</th><th>面积</th><th>等效直径</th><th>圆度</th><th>长宽比</th><th>长轴 / 短轴</th><th>质心 X / Y</th><th>状态</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+  <div id="status" role="status">等待选择样本</div>
+</section>
+<aside class="settings">
+  <div class="eyebrow">SEGMENTATION & MEASUREMENT</div><h2>分割与测量</h2>
+  <label>阈值方法<select id="method"><option value="manual">手动全局阈值</option><option value="otsu">Otsu自动阈值</option><option value="adaptive">局部自适应阈值</option><option value="percentile">灰度分位数</option></select></label>
+  <div class="two"><label>颗粒极性<select id="polarity"><option value="dark">暗颗粒</option><option value="light">亮颗粒</option></select></label><label>分析通道<select id="channel"><option value="gray">灰度</option><option value="red">红</option><option value="green">绿</option><option value="blue">蓝</option><option value="hue">色相</option><option value="saturation">饱和度</option><option value="value">明度</option></select></label></div>
+  <label>灰度阈值 <output id="thresholdValue">120</output><input id="threshold" type="range" min="0" max="255" value="120"></label>
+  <label>平滑σ <output id="sigmaValue">1</output><input id="sigma" type="range" min="0" max="8" step="0.25" value="1"></label>
+  <div class="two"><label>最小面积 px²<input id="min_area" type="number" min="1" value="40"></label><label>最大面积 px²<input id="max_area" type="number" min="1" value="16000000"></label></div>
+  <details><summary>高级分割参数</summary><div class="two"><label>局部窗口<input id="adaptive_window" type="number" min="3" max="301" step="2" value="41"></label><label>局部偏移<input id="adaptive_offset" type="number" value="10"></label></div><label>灰度分位数<input id="percentile" type="number" min="0" max="100" value="25"></label><div class="two"><label>开运算半径<input id="opening" type="number" min="0" max="20" value="0"></label><label>闭运算半径<input id="closing" type="number" min="0" max="20" value="0"></label></div><label>连通性<select id="connectivity"><option value="8">8邻域</option><option value="4">4邻域</option></select></label></details>
+  <label class="check"><input id="fill_holes" type="checkbox" checked>填充内部孔洞</label><label class="check"><input id="exclude_edge" type="checkbox" checked>排除接触图边和ROI边界的颗粒</label><label class="check"><input id="split_touching" type="checkbox">分离粘连颗粒</label><label>分离种子间距 px<input id="seed_distance" type="number" min="2" max="100" value="12"></label>
+  <button id="run" class="primary wide">▶ 运行图像分析</button>
+  <div class="section-buttons"><button id="calibrate">尺寸标定</button><button id="preprocess">图像预处理</button><button id="filterMeasurements">测量值筛选</button><button id="saveRecipe">保存分析配方</button><button id="export">导出与报告</button><label class="file-label">上传参考掩膜<input id="referenceFile" type="file" accept="image/*" hidden></label></div>
+  <div class="notice" id="sampleInfo">所有处理在本机执行。请检查分割结果后使用测量值。</div>
+</aside>
+</main>
+<dialog id="dialog"><div class="dialog-header"><h2 id="dialogTitle"></h2><button id="closeDialog" aria-label="关闭">×</button></div><div id="dialogBody"></div></dialog>
+<script src="/static/app.js"></script>
+</body>
+</html>

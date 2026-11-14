@@ -1,0 +1,142 @@
+{
+  "method": "只统计app.py和particlescope/*.py自有后端。tokenize排除空行、注释、缩进、纯字符串内容；AST排除独立字符串表达式及文档字符串。前端、测试、脚本、依赖、虚拟环境不计。与根目录统计后端有效行数.py采用同一measure算法。",
+  "files": [
+    {
+      "file": "app.py",
+      "effective_lines": 8,
+      "sha256": "3045f31093663a5bca33455a43607f83152bafcf542da443c0b041ec746493d7"
+    },
+    {
+      "file": "particlescope/__init__.py",
+      "effective_lines": 55,
+      "sha256": "96d19914b1984b3c9294c35584fd6ad794b5d41dca53040a1092e13f99207a07"
+    },
+    {
+      "file": "particlescope/annotations.py",
+      "effective_lines": 153,
+      "sha256": "634aa97692cc0912b5a4d501f23bc331e858b01e95b8fd6384eef3f27e98b8dc"
+    },
+    {
+      "file": "particlescope/api.py",
+      "effective_lines": 649,
+      "sha256": "d2f988feba7eabea9b167f635b8f6449c60f7d3dc4067ddabf25f0d98415fc0d"
+    },
+    {
+      "file": "particlescope/boundaries.py",
+      "effective_lines": 134,
+      "sha256": "f48c99e7410627e34178c78a96abf2e9c79be1379dd76bff417f167087db963e"
+    },
+    {
+      "file": "particlescope/catalog.py",
+      "effective_lines": 255,
+      "sha256": "8c17d72fbe242142376ac5b7c2067b582e3c3de76fc236b08373fd7b768cc3c5"
+    },
+    {
+      "file": "particlescope/color_analysis.py",
+      "effective_lines": 155,
+      "sha256": "ea16ce75c8822afb7d37078647779ad48d570fa5a9dd9ce0ea2a79ed58092386"
+    },
+    {
+      "file": "particlescope/comparison.py",
+      "effective_lines": 153,
+      "sha256": "dd93525e42b7e274a4f721ef86c1cd83d5b67be905758b9d1f01c1b932e68ed3"
+    },
+    {
+      "file": "particlescope/exports.py",
+      "effective_lines": 153,
+      "sha256": "ede33213bbd10b9f8b75684afe57d9c599f061076cfd052c76578e2a6e3bfd27"
+    },
+    {
+      "file": "particlescope/imaging.py",
+      "effective_lines": 260,
+      "sha256": "69c3f4283dcb0bda4a347ecf0f745d60f5772fbba724488a77d572379751e699"
+    },
+    {
+      "file": "particlescope/jobs.py",
+      "effective_lines": 146,
+      "sha256": "fd0305d7938de4e4db8421fdb43a2bd6a27449fba7741797687d8af1e2343c4a"
+    },
+    {
+      "file": "particlescope/measurements.py",
+      "effective_lines": 256,
+      "sha256": "2fabf00261a40285ce9e5f4e410593fc9b939e65e5312ee6f2498ee83af7bc7a"
+    },
+    {
+      "file": "particlescope/migration.py",
+      "effective_lines": 34,
+      "sha256": "43e6e4330c233dcfc7f414384be4ed671f406ceff3d147700f662c7d43e0cc5d"
+    },
+    {
+      "file": "particlescope/morphology.py",
+      "effective_lines": 162,
+      "sha256": "789f6fe04151a49cb41ea05c3c5f6b284ac9ac41662a9abc4df24312c5beeed4"
+    },
+    {
+      "file": "particlescope/recipes.py",
+      "effective_lines": 112,
+      "sha256": "1c56641c5128ce8d185b4996911c13d5df5bb12e091cbc61c6d44e4446c06bfb"
+    },
+    {
+      "file": "particlescope/registration.py",
+      "effective_lines": 230,
+      "sha256": "cff7cd8f4f3d62cfaf4a609d80a2a9766667d0ad1ee9f7ed9cbc62d645fec989"
+    },
+    {
+      "file": "particlescope/rendering.py",
+      "effective_lines": 206,
+      "sha256": "a7a59dfe88f25b97e265f85a6c0dfe0a5391791132badffe973fbd588156eb9a"
+    },
+    {
+      "file": "particlescope/reports.py",
+      "effective_lines": 162,
+      "sha256": "baa6eec2ed66b6f85cc3e248c6d1686077a62e8ab5a3c184cf05aacf248996d1"
+    },
+    {
+      "file": "particlescope/segmentation.py",
+      "effective_lines": 235,
+      "sha256": "250fdf40705c12a2e9909727383f934d9da1fbcd5cea44ad0d3cf2e35deccb21"
+    },
+    {
+      "file": "particlescope/service.py",
+      "effective_lines": 222,
+      "sha256": "1f5f9df2cbbe15932c6240d00f6da5263ddcf3ecabd64a356d403007cb88a297"
+    },
+    {
+      "file": "particlescope/spatial.py",
+      "effective_lines": 216,
+      "sha256": "d6a33725833969fc2b6818a512cbc97b0c096029ef1260789ef983ddf2dd2882"
+    },
+    {
+      "file": "particlescope/statistics.py",
+      "effective_lines": 266,
+      "sha256": "b1ed475359fbfd910ec27368c0fe052a232305ae7651f83c5276f109579ac1c3"
+    },
+    {
+      "file": "particlescope/storage.py",
+      "effective_lines": 272,
+      "sha256": "592dcec4ff41fd4d27ec936fc8d180549ab6f4111b5db1e4c5520ed09e7b5cd7"
+    },
+    {
+      "file": "particlescope/synthetic.py",
+      "effective_lines": 135,
+      "sha256": "bdddc62ea58c04219b82eac39e81bf020ef6ef72dde55db956a449d8e95b05c1"
+    },
+    {
+      "file": "particlescope/texture.py",
+      "effective_lines": 167,
+      "sha256": "767edaffcbd296a49f2ae33410305e7473ae744f3d811edbebd3cd5a50873f79"
+    },
+    {
+      "file": "particlescope/uncertainty.py",
+      "effective_lines": 141,
+      "sha256": "55bb962a30549f9105a792765910748045696490bc4bc024122de13d9683b2f8"
+    },
+    {
+      "file": "particlescope/validation.py",
+      "effective_lines": 197,
+      "sha256": "31f7f2906c519ff841ab6bef69a0ba7671da613413ab94c47545d10fb0fa6934"
+    }
+  ],
+  "total": 5134,
+  "passes_5000": true
+}

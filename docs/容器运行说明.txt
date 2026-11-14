@@ -1,0 +1,5 @@
+ParticleScope 容器开发环境
+本项目使用 Python 3.12 及 requirements.txt 中的依赖。正式答题镜像中系统 Python 可能为3.11且不含pip；可通过用户目录安装的uv获取Python3.12并创建本项目.venv，不需要apt/root权限。依赖和虚拟环境不提交Git。
+示例：安装uv后执行 uv python install 3.12；uv venv --python 3.12 .venv；uv pip install --python .venv/bin/python -r requirements.txt。
+启动：PARTICLESCOPE_DATA_DIR=/workspace/runtime-data PORT=8894 .venv/bin/python app.py。
+应用数据目录应独立；现有tests/test_workflows.py可通过Python unittest执行。页面入口为根路径，处理完全在本地，不需要外部分析服务。
