@@ -8,6 +8,21 @@ test_color_texture_and_profile (test_workflows.Workflows.test_color_texture_and_
 test_crofton_circle_approximation (test_workflows.Workflows.test_crofton_circle_approximation) ... ok
 test_export_contents_and_report (test_workflows.Workflows.test_export_contents_and_report) ... ok
 test_filter_preserves_detection_and_history (test_workflows.Workflows.test_filter_preserves_detection_and_history) ... ok
+test_focus_stack_calibration_depth_map_and_provenance (test_workflows.Workflows.test_focus_stack_calibration_depth_map_and_provenance) ... /usr/lib/python3.11/unittest/case.py:579: ResourceWarning: unclosed file <_io.BufferedReader name='/tmp/tmp4mmyd0aa/samples/77d3c631658b4d02a4f466c647ac1655/focus-depth.png'>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_focus_stack_flat_region_gains_no_texture (test_workflows.Workflows.test_focus_stack_flat_region_gains_no_texture) ... /workspace/tests/test_workflows.py:399: ResourceWarning: unclosed file <_io.BufferedReader name='/tmp/tmp4mmyd0aa/samples/fdbbf771ea214652a806d2e667fb179b/working.png'>
+  data = self.client.get('/api/samples/' + response.json['sample']['id'] + '/image/working').data
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_focus_stack_fuses_sharp_regions (test_workflows.Workflows.test_focus_stack_fuses_sharp_regions) ... /workspace/tests/test_workflows.py:369: ResourceWarning: unclosed file <_io.BufferedReader name='/tmp/tmp4mmyd0aa/samples/38335eda3d8249edb56d0916c11bd017/working.png'>
+  data = self.client.get('/api/samples/' + sample['id'] + '/image/working').data
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_focus_stack_rejects_mismatched_sizes (test_workflows.Workflows.test_focus_stack_rejects_mismatched_sizes) ... ok
+test_focus_stack_validation (test_workflows.Workflows.test_focus_stack_validation) ... ok
+test_focus_weights_uniform_in_flat_decisive_on_texture (test_workflows.Workflows.test_focus_weights_uniform_in_flat_decisive_on_texture) ... ok
 test_geometry_resets_roi_calibration_annotations (test_workflows.Workflows.test_geometry_resets_roi_calibration_annotations) ... ok
 test_input_validation (test_workflows.Workflows.test_input_validation) ... ok
 test_isolated_ground_truth (test_workflows.Workflows.test_isolated_ground_truth) ... ok
@@ -25,6 +40,6 @@ test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_recon
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 31 tests in 14.390s
 
 OK

@@ -1,12 +1,13 @@
 app.py: 8
 particlescope/__init__.py: 55
 particlescope/annotations.py: 153
-particlescope/api.py: 649
+particlescope/api.py: 657
 particlescope/boundaries.py: 134
 particlescope/catalog.py: 255
 particlescope/color_analysis.py: 155
 particlescope/comparison.py: 153
-particlescope/exports.py: 153
+particlescope/exports.py: 170
+particlescope/focus.py: 179
 particlescope/imaging.py: 260
 particlescope/jobs.py: 146
 particlescope/measurements.py: 256
@@ -17,7 +18,7 @@ particlescope/registration.py: 230
 particlescope/rendering.py: 206
 particlescope/reports.py: 162
 particlescope/segmentation.py: 235
-particlescope/service.py: 222
+particlescope/service.py: 224
 particlescope/spatial.py: 216
 particlescope/statistics.py: 266
 particlescope/storage.py: 272
@@ -25,5 +26,5 @@ particlescope/synthetic.py: 135
 particlescope/texture.py: 167
 particlescope/uncertainty.py: 141
 particlescope/validation.py: 197
-有效后端合计：5134
+有效后端合计：5340
 超过5000：True

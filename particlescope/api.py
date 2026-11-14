@@ -130,7 +130,7 @@ def create_api(store, service, recipes, jobs):
     @api.get('/samples/<key>/image/<kind>')
     def sample_image(key, kind):
         path = store.sample_dir(key)
-        if kind in ('original', 'working', 'thumb', 'reference'):
+        if kind in ('original', 'working', 'thumb', 'reference', 'focus-depth'):
             target = path / (kind + '.png')
         elif kind in ('overlay', 'mask', 'labels'):
             analysis_id = request.args.get('analysis_id')
@@ -649,6 +649,12 @@ def create_api(store, service, recipes, jobs):
             moving = store.working_image(moving_id)
             _, _, report = registration_report(reference, moving, mode, dx, dy)
             return jsonify(report)
+
+    @api.post('/focus-stack')
+    def focus_stack():
+        from .focus import focus_parameters, create_focus_sample
+        params = focus_parameters(body())
+        return jsonify(create_focus_sample(store, service, params)), 201
 
     @api.post('/mosaic')
     def mosaic():

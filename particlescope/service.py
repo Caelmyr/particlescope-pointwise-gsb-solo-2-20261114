@@ -230,10 +230,12 @@ class AnalysisService:
         meta = self.store.meta(sample_id)
         result = self.store.result(sample_id)
         annotations = self.store.annotations(sample_id)
+        provenance = self.store.json_read(self.store.sample_dir(sample_id) / 'provenance.json')
         return {
             'meta': meta,
             'analysis': {k: result.get(k) for k in ['id', 'count', 'coverage', 'mean_diameter', 'unit', 'stale']} if result else None,
             'annotations': annotation_summary(annotations),
             'analysis_history_count': len(self.store.list_analyses(sample_id)),
             'preprocessing_history_count': len(meta['history']),
+            'provenance': provenance.get('operation') if provenance else None,
         }

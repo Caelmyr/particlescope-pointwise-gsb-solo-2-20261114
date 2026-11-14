@@ -1,11 +1,11 @@
 const $ = id => document.getElementById(id);
-const state = {sample:null,result:null,samples:[],catalog:null,recipes:[],selected:new Set(),view:'working',busy:false,points:[],zoom:1,dx:0,dy:0,loadToken:0};
+const state = {sample:null,result:null,samples:[],catalog:null,recipes:[],selected:new Set(),view:'working',busy:false,points:[],zoom:1,dx:0,dy:0,loadToken:0,provenance:null};
 const segmentationFields = ['method','polarity','channel','threshold','sigma','min_area','max_area','adaptive_window','adaptive_offset','percentile','opening','closing','connectivity','fill_holes','exclude_edge','split_touching','seed_distance'];
 const stringFields = new Set(['method','polarity','channel']);
 let loadedImage = null;
 let objectURL = null;
 let jobTimer = null;
-const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率'};
+const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率',plane_count:'焦面数',planes:'各焦面贡献',index:'焦面序号',contribution_percent:'贡献比例 %',mean_focus_measure:'平均清晰度',flat_averaged_percent:'平坦均化区域 %',decisive_percent:'明确主导焦面区域 %',noise_floor:'噪声基准',parameters:'融合参数',smooth_sigma:'清晰度评价平滑σ',selectivity:'焦面选择锐度',blend_sigma:'权重过渡平滑σ',calibration_inherited:'已继承标定',width:'宽度',height:'高度'};
 function label(key){return labels[key] || key.replaceAll('_',' ')}
 function el(tag, text, cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
 function status(message,error=false){$('status').textContent=message;$('status').classList.toggle('error',error)}
@@ -117,7 +117,7 @@ async function selectSample(key){
   if(state.busy)return status('当前操作进行中，请稍候');
   const token=++state.loadToken;const data=await request(`/api/samples/${key}`);
   if(token!==state.loadToken)return;
-  state.sample=data.meta;state.view='working';state.points=[];loadedImage=null;resetView();
+  state.sample=data.meta;state.provenance=data.provenance;state.view='working';state.points=[];loadedImage=null;resetView();
   $('name').textContent=data.meta.name;$('size').textContent=`${data.meta.width} × ${data.meta.height} px`;
   $('archive').textContent=data.meta.archived?'恢复':'归档';
   $('sampleInfo').textContent=`分析区域：${data.meta.roi.type}；标定：1 px = ${fmt(data.meta.calibration.scale)} ${data.meta.calibration.unit}。图像版本 ${data.meta.image_revision}，修订 ${data.meta.revision}。`;
@@ -361,6 +361,47 @@ $('compare').onclick=guard(()=>{
   }));layout.append(controls,output);body.append(layout,el('p','自动配准仅估计平移；拼接采用当前偏移且要求标定完全一致。新配准样本需要重新标定。','hint'));
 });
 $('batch').onclick=guard(openBatch);
+$('focusStack').onclick=guard(()=>{
+  const available=state.samples.filter(s=>!s.archived);
+  const body=openDialog('焦面融合 · 扩展景深');
+  if(available.length<2){body.append(el('p','请先导入同一视野至少两个不同焦面的图像样本。','hint'));return}
+  const layout=el('div',undefined,'dialog-grid'),controls=el('div'),output=el('div',undefined,'tool-output');
+  controls.append(el('p','勾选顺序即焦面顺序。全部样本尺寸必须一致，否则拒绝融合；平坦区域按各焦面等权平均，不凭空产生纹理；融合结果另存为可继续分析的新样本。','hint'));
+  if(state.sample&&state.provenance==='focus_stack'){
+    const view=el('button','查看当前样本的焦面来源图');view.onclick=()=>{const target=openDialog('焦面来源图 · '+state.sample.name);const img=el('img',undefined,'preview');img.src=url('image/focus-depth')+'?v='+state.sample.revision;target.append(img,el('p','颜色表示该位置主要来自哪个焦面，图例标注各焦面贡献比例；亮度越低表示各焦面清晰度接近（多为平坦区）。','hint'))};controls.append(view);
+  }
+  const order=[],checks=new Map();
+  const orderBox=el('div');
+  function renderOrder(){
+    orderBox.replaceChildren();
+    if(!order.length){orderBox.append(el('p','尚未选择焦面样本','muted'));return}
+    order.forEach((id,i)=>{const s=state.samples.find(x=>x.id===id);const card=el('div',undefined,'history-card');card.append(el('h3',`焦面 ${i+1} · ${s.name}（${s.width}×${s.height}）`));const remove=el('button','移除');remove.onclick=()=>{order.splice(i,1);const check=checks.get(id);if(check)check.checked=false;renderOrder()};card.append(remove);orderBox.append(card)});
+  }
+  const selector=el('div',undefined,'sample-select');
+  for(const sample of available){
+    const label=el('label',`${sample.name} · ${sample.width}×${sample.height}`),check=el('input');
+    check.type='checkbox';checks.set(sample.id,check);
+    check.onchange=()=>{if(check.checked)order.push(sample.id);else{const i=order.indexOf(sample.id);if(i>=0)order.splice(i,1)}renderOrder()};
+    label.prepend(check);selector.append(label);
+  }
+  controls.append(el('h3','1. 按焦面顺序勾选样本'),selector,el('h3','2. 确认焦面顺序'),orderBox);
+  renderOrder();
+  controls.append(makeForm([
+    num('smooth_sigma','清晰度评价平滑σ',2,0.5,10),
+    num('selectivity','焦面选择锐度（越大越集中于最清晰焦面）',8,1,32),
+    num('blend_sigma','权重过渡平滑σ（抗光晕）',1.5,0,10),
+  ],'运行焦面融合',async data=>{
+    if(order.length<2)throw Error('请至少勾选两个焦面样本');
+    output.replaceChildren(el('p','正在融合焦面…','muted'));
+    const result=await task('正在融合焦面并保存新样本…',()=>post('/api/focus-stack',{...data,sample_ids:order}));
+    output.replaceChildren();renderOutput(result.report,output);
+    output.append(el('h3','焦面来源图（每个位置主要来自哪个焦面）'));
+    const img=el('img',undefined,'preview');img.src=`/api/samples/${result.sample.id}/image/focus-depth`;output.append(img);
+    const open=el('button','打开融合生成的新样本','primary');open.onclick=guard(async()=>{await selectSample(result.sample.id);$('dialog').close()});output.append(open);
+    await loadLibrary();status('焦面融合完成，结果已另存为新样本');
+  }));
+  layout.append(controls,output);body.append(layout);
+});
 async function openBatch(){
   state.recipes=await request('/api/recipes');const body=openDialog('批量分析与配方');const layout=el('div',undefined,'dialog-grid'),controls=el('div'),output=el('div',undefined,'tool-output');
   const selector=el('div',undefined,'sample-select');for(const sample of state.samples.filter(s=>!s.archived)){const label=el('label',sample.name),check=el('input');check.type='checkbox';check.value=sample.id;check.checked=state.selected.has(sample.id);label.prepend(check);selector.append(label)}

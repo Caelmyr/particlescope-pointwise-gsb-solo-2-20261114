@@ -320,6 +320,139 @@ class Workflows(unittest.TestCase):
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
 
+    def import_planes(self, planes, prefix='plane'):
+        files = [(io.BytesIO(png_bytes(p)), f'{prefix}{i}.png') for i, p in enumerate(planes)]
+        response = self.client.post('/api/samples', data={'files': files}, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 201, response.json)
+        self.assertEqual(len(response.json['failed']), 0)
+        return response.json['imported']
+
+    @staticmethod
+    def focus_planes():
+        rng = np.random.default_rng(7)
+        height, width = 160, 240
+        yy, xx = np.indices((height, width))
+        base = np.full((height, width, 3), 220.0)
+        base[(np.sin(xx / 1.6) > 0) & (xx < width // 2)] = 40
+        base[((xx + 2 * yy) % 7 < 2) & (xx >= width // 2)] = 40
+        base[:28] = 220
+        planes = []
+        for focus in ('left', 'none', 'right'):
+            frame = base.copy()
+            if focus != 'left':
+                frame[:, :width // 2] = ndi.gaussian_filter(frame[:, :width // 2], (3, 3, 0), mode='reflect')
+            if focus != 'right':
+                frame[:, width // 2:] = ndi.gaussian_filter(frame[:, width // 2:], (3, 3, 0), mode='reflect')
+            frame += rng.normal(0, 1.0, frame.shape)
+            planes.append(Image.fromarray(np.clip(frame, 0, 255).astype(np.uint8)))
+        return planes
+
+    @staticmethod
+    def region_energy(image, y0, y1, x0, x1):
+        gray = np.asarray(image.convert('L'), dtype=np.float32)[y0:y1, x0:x1]
+        return float((ndi.laplace(gray) ** 2).mean())
+
+    def fuse(self, ids, **extra):
+        return self.client.post('/api/focus-stack', json={'sample_ids': ids, **extra})
+
+    def test_focus_stack_fuses_sharp_regions(self):
+        planes = self.focus_planes()
+        imported = self.import_planes(planes)
+        response = self.fuse([m['id'] for m in imported])
+        self.assertEqual(response.status_code, 201, response.json)
+        sample = response.json['sample']
+        self.assertEqual((sample['width'], sample['height']), (240, 160))
+        report = response.json['report']
+        self.assertEqual(report['plane_count'], 3)
+        self.assertAlmostEqual(sum(p['contribution_percent'] for p in report['planes']), 100, places=3)
+        self.assertGreater(report['flat_averaged_percent'], 5)
+        data = self.client.get('/api/samples/' + sample['id'] + '/image/working').data
+        fused = Image.open(io.BytesIO(data)).convert('RGB')
+        left = (40, 150, 10, 110)
+        right = (40, 150, 130, 230)
+        fused_left = self.region_energy(fused, *left)
+        fused_right = self.region_energy(fused, *right)
+        self.assertGreater(fused_left, 2 * self.region_energy(planes[2], *left))
+        self.assertGreater(fused_left, 0.5 * self.region_energy(planes[0], *left))
+        self.assertGreater(fused_right, 2 * self.region_energy(planes[0], *right))
+        self.assertGreater(fused_right, 0.5 * self.region_energy(planes[2], *right))
+        path = Path(self.temp.name) / 'samples' / sample['id'] / 'focus-depth.npy'
+        indices = np.load(path, allow_pickle=False)
+        self.assertGreater((indices[40:150, 10:110] == 0).mean(), 0.8)
+        self.assertGreater((indices[40:150, 130:230] == 2).mean(), 0.8)
+        flat_std = float(np.asarray(fused.convert('L'), dtype=np.float32)[4:24, 60:180].std())
+        self.assertLess(flat_std, 0.85)
+        analysis = self.analyze(sample, method='otsu')
+        self.assertIn('count', analysis)
+
+    def test_focus_stack_flat_region_gains_no_texture(self):
+        rng = np.random.default_rng(11)
+        planes = [
+            Image.fromarray(np.clip(200 + rng.normal(0, 2.0, (120, 180, 3)), 0, 255).astype(np.uint8))
+            for _ in range(4)
+        ]
+        imported = self.import_planes(planes)
+        response = self.fuse([m['id'] for m in imported])
+        self.assertEqual(response.status_code, 201, response.json)
+        report = response.json['report']
+        self.assertGreater(report['flat_averaged_percent'], 90)
+        data = self.client.get('/api/samples/' + response.json['sample']['id'] + '/image/working').data
+        fused = np.asarray(Image.open(io.BytesIO(data)).convert('L'), dtype=np.float32)
+        self.assertLess(float(fused.std()), 1.5)
+        self.assertGreater(float(fused.std()), 0.1)
+
+    def test_focus_stack_rejects_mismatched_sizes(self):
+        planes = [Image.new('RGB', (200, 120), (200, 200, 200)), Image.new('RGB', (100, 60), (200, 200, 200))]
+        imported = self.import_planes(planes)
+        response = self.fuse([m['id'] for m in imported])
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('尺寸', response.json['error'])
+
+    def test_focus_stack_validation(self):
+        imported = self.import_planes([Image.new('RGB', (64, 64))])
+        sample_id = imported[0]['id']
+        for ids in [[sample_id], [sample_id, sample_id], [sample_id, '0' * 32], [sample_id, 'bad-id']]:
+            response = self.fuse(ids)
+            self.assertEqual(response.status_code, 400, ids)
+
+    def test_focus_stack_calibration_depth_map_and_provenance(self):
+        imported = self.import_planes(self.focus_planes())
+        for meta in imported:
+            self.request('PUT', meta, 'calibration', {
+                'revision': meta['revision'], 'pixel_length': 10, 'physical_length': 5, 'unit': 'μm',
+            })
+        response = self.fuse([m['id'] for m in imported])
+        self.assertEqual(response.status_code, 201, response.json)
+        self.assertTrue(response.json['report']['calibration_inherited'])
+        sample = response.json['sample']
+        self.assertEqual(sample['calibration']['unit'], 'μm')
+        self.assertAlmostEqual(sample['calibration']['scale'], 0.5)
+        depth = self.client.get('/api/samples/' + sample['id'] + '/image/focus-depth')
+        self.assertEqual(depth.status_code, 200)
+        self.assertEqual(depth.mimetype, 'image/png')
+        summary = self.client.get('/api/samples/' + sample['id']).json
+        self.assertEqual(summary['provenance'], 'focus_stack')
+
+    def test_focus_weights_uniform_in_flat_decisive_on_texture(self):
+        from particlescope.focus import fuse_stack
+        rng = np.random.default_rng(5)
+        flats = [
+            Image.fromarray(np.clip(128 + rng.normal(0, 2, (60, 90, 3)), 0, 255).astype(np.uint8))
+            for _ in range(3)
+        ]
+        fused, indices, confidence, stats = fuse_stack(lambda i: flats[i], 3, (90, 60))
+        self.assertLess(float(fused.std()), 1.4)
+        self.assertGreater(stats['flat_percent'], 90)
+        self.assertAlmostEqual(sum(stats['contributions']), 100, places=4)
+        self.assertLess(float(confidence.mean()), 0.2)
+        texture = np.clip(rng.normal(128, 30, (60, 90, 3)), 0, 255)
+        sharp = Image.fromarray(texture.astype(np.uint8))
+        blurred = Image.fromarray(ndi.gaussian_filter(texture, (3, 3, 0)).astype(np.uint8))
+        planes = [sharp, blurred]
+        fused, indices, confidence, stats = fuse_stack(lambda i: planes[i], 2, (90, 60))
+        self.assertGreater((indices == 0).mean(), 0.9)
+        np.testing.assert_allclose(fused, np.asarray(sharp, dtype=float), atol=8)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
