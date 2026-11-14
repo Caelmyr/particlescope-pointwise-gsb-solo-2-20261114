@@ -330,7 +330,9 @@ function openToolbox(group='全部'){
   body.append(nav);const grid=el('div',undefined,'tool-list');for(const tool of state.catalog.tools.filter(t=>group==='全部'||t.group===group)){const button=el('button',undefined,'tool-card');button.append(el('small',tool.group),el('b',tool.label),el('span',tool.note));button.onclick=guard(()=>openTool(tool.key));grid.append(button)}body.append(grid);
 }
 function openTool(key){
-  requireSample();const tool=state.catalog.tools.find(t=>t.key===key);const body=openDialog(tool.label);const layout=el('div',undefined,'dialog-grid');const controls=el('div'),output=el('div',undefined,'tool-output');controls.append(el('p',tool.note,'hint'));
+  requireSample();const tool=state.catalog.tools.find(t=>t.key===key);const body=openDialog(tool.label);
+  if(key==='skeleton'){openSkeletonTool(tool,body);return}
+  const layout=el('div',undefined,'dialog-grid');const controls=el('div'),output=el('div',undefined,'tool-output');controls.append(el('p',tool.note,'hint'));
   controls.append(makeForm(tool.fields,'运行 '+tool.label,async data=>{
     output.replaceChildren(el('p','正在计算…','muted'));
     if(key==='sweep')data.parameters=parameters();
@@ -345,6 +347,62 @@ function openTool(key){
     status(tool.label+'完成');
   }));layout.append(controls,output);body.append(layout);
   if(tool.method==='GET')controls.querySelector('form').requestSubmit();
+}
+function openSkeletonTool(tool,body){
+  const layout=el('div',undefined,'dialog-grid');const controls=el('div'),output=el('div',undefined,'tool-output');
+  controls.append(el('p',tool.note,'hint'));
+  const view=el('div',undefined,'skeleton-view'),legend=el('p','端点 E 为红色圆点，结点 J 为橙色方框，支路 B 带编号；点击编号可定位。','hint');
+  const image=el('img',undefined,'preview'),rawImage=el('img',undefined,'preview');
+  image.alt=rawImage.alt='骨架网络';
+  let report=null,selectedBranch=null,selectedNode=null,phase='pruned';
+  const fields=[num('spur_threshold','毛刺保留尺度 px',0,0,500),sel('phase','显示网络','pruned',[['pruned','裁剪后（按毛刺尺度）'],['raw','原始未裁剪']])];
+  const form=makeForm(fields,'运行 细化骨架网络',async data=>{
+    const payload={spur_threshold:data.spur_threshold,phase:data.phase};
+    if(selectedBranch)payload.branch_id=selectedBranch;
+    if(selectedNode)payload.node_id=selectedNode;
+    const result=await task('正在细化骨架并定位端点与支路…',()=>post(url(tool.path),payload));
+    report=result;phase=result.phase;draw();
+  });
+  form.append(el('p','毛刺尺度变化只影响本次查看，不覆盖已有分析记录与原始掩膜。','hint'));
+  controls.append(form);layout.append(controls,output);body.append(layout);
+  function draw(){
+    if(!report)return;
+    output.replaceChildren();
+    const network=report.network;
+    const impact=report.impact;
+    const kinds={loop:'闭环',terminal:'末端',connecting:'连接',isolated:'独立',open:'开口'};
+    const cards=el('div',undefined,'metric-grid');
+    const entries=[['骨架像素',network.skeleton_pixels],['端点',network.endpoint_count],['结点',network.junction_count],['支路',network.branch_count],['闭环',network.loop_count],[`总长度 (${report.unit})`,network.total_length],[`平均支路 (${report.unit})`,network.mean_branch_length],[`最长支路 (${report.unit})`,network.longest_branch_px*report.scale]];
+    for(const [name,value] of entries){const card=el('div',undefined,'metric-card');card.append(el('small',name),el('strong',fmt(value)));cards.append(card)}
+    output.append(cards);
+    const change=el('p',`毛刺尺度 ${fmt(impact.spur_threshold_px)} px：移除 ${impact.removed_spur_count} 条、合计 ${fmt(impact.removed_spur_length)} ${report.unit}（占 ${fmt(impact.removed_length_percent)}%）；结点 ${fmt(impact.node_change)}，端点 ${fmt(impact.endpoint_change)}，支路 ${fmt(impact.branch_change)}，总长度变化 ${fmt(impact.total_length_change)} ${report.unit}。`,'hint');
+    output.append(change);
+    output.append(el('p',`当前显示 ${phase==='raw'?'原始未裁剪':'裁剪后'}网络；骨架像素 ${fmt(network.skeleton_pixels)}。`,'muted'));
+    const imageUrl=`${url('image/skeleton-overlay')}?phase=${phase}&branch_id=${selectedBranch||''}&node_id=${selectedNode||''}&spur=${report.spur_threshold_px}&v=${state.sample.revision}`;
+    image.src=imageUrl;rawImage.src=`${url('image/skeleton-raw')}?v=${state.sample.revision}`;
+    const viewBox=el('div',undefined,'skeleton-view');viewBox.append(el('h3','定位网络叠加'),image);
+    if(phase==='raw')viewBox.append(el('p','原始骨架掩膜（未裁剪）','muted'),rawImage);
+    output.append(viewBox,legend);
+    const branches=el('div');branches.append(el('h3',`支路（${report.branches.length}）`));
+    const table=el('div',undefined,'table-wrap'),t=el('table'),head=el('thead'),row=el('tr');
+    for(const name of ['编号','类型','结点A','结点B','像素','长度 px','长度'])row.append(el('th',name));head.append(row);t.append(head);
+    const tbody=el('tbody');
+    for(const branch of report.branches.slice(0,400)){const r=el('tr');for(const value of [branch.id,kinds[branch.type]||branch.type,fn(branch.node_a),fn(branch.node_b),branch.pixel_count,fn(branch.length_px),fn(branch.length)])r.append(el('td',fmt(value)));r.onclick=()=>{selectedBranch=branch.id;selectedNode=null;draw()};if(branch.id===selectedBranch)r.className='highlight';tbody.append(r)}
+    t.append(tbody);table.append(t);branches.append(table);
+    if(report.branches.length>400)branches.append(el('p',`显示前400条，共${report.branches.length}条；下载JSON可查看完整结果`,'muted'));
+    output.append(branches);
+    const nodes=el('div');nodes.append(el('h3',`结点与端点（${report.nodes.length}）`));
+    const chips=el('div',undefined,'node-chips');
+    for(const node of report.nodes.slice(0,300)){const chip=el('button',`${node.type==='endpoint'?'E':node.type==='junction'?'J':'I'}${node.id} · ${fmt(node.x)},${fmt(node.y)}`,'node-chip');if(node.id===selectedNode)chip.classList.add('active');chip.onclick=()=>{selectedNode=node.id;selectedBranch=null;draw()};chips.append(chip)}
+    nodes.append(chips);output.append(nodes);
+    const selected=report.branches.find(b=>b.id===selectedBranch);
+    if(selected){const section=el('div',undefined,'output-section');section.append(el('h3',`支路 B${selected.id} · ${kinds[selected.type]||selected.type}`));section.append(el('p',`端点像素 ${selected.start.join(',')} → ${selected.end.join(',')}；与结点 ${fn(selected.node_a)} / ${fn(selected.node_b)} 相连；路径像素 ${selected.pixel_count}，空间长度 ${fmt(selected.length_px)} px（${fmt(selected.length)} ${report.unit}）。`));section.append(el('p','点击表格行或结点按钮会刷新叠加图与高亮。','muted'));output.append(section)}
+    const download=el('button','下载完整结果 JSON');download.onclick=()=>downloadJSON(report,'skeleton.json');output.append(download);
+    status(`骨架网络：${report.network.endpoint_count} 端点，${report.network.junction_count} 结点，${report.network.branch_count} 支路`);
+  }
+  function fn(value){return value===null||value===undefined?'—':value}
+  controls.append(el('p','结果图像另存为 skeleton-overlay.png、skeleton-raw.png；不修改原始掩膜或已有分析记录。','muted'));
+  if(tool.method==='GET')form.requestSubmit();
 }
 document.querySelectorAll('[data-tool]').forEach(button=>button.onclick=guard(()=>openTool(button.dataset.tool)));
 $('compare').onclick=guard(()=>{

@@ -19,12 +19,15 @@ test_preprocessing_invalidates_analysis_and_restore (test_workflows.Workflows.te
 test_revisions_reject_stale_write (test_workflows.Workflows.test_revisions_reject_stale_write) ... ok
 test_roi_changes_denominator_and_excludes_boundary (test_workflows.Workflows.test_roi_changes_denominator_and_excludes_boundary) ... ok
 test_same_sample_comparison_and_registration (test_workflows.Workflows.test_same_sample_comparison_and_registration) ... ok
+test_skeleton_endpoint_preserves_analysis_and_mask (test_workflows.Workflows.test_skeleton_endpoint_preserves_analysis_and_mask) ... ok
+test_skeleton_nodes_branches_loops_and_spur_effect (test_workflows.Workflows.test_skeleton_nodes_branches_loops_and_spur_effect) ... ok
+test_skeleton_oblique_and_horizontal_lengths_are_comparable (test_workflows.Workflows.test_skeleton_oblique_and_horizontal_lengths_are_comparable) ... ok
 test_skeleton_preserves_thin_structure (test_workflows.Workflows.test_skeleton_preserves_thin_structure) ... ok
 test_spatial_counts_reconcile (test_workflows.Workflows.test_spatial_counts_reconcile) ... ok
 test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_reconcile_counts) ... ok
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 28 tests in 14.881s
 
 OK

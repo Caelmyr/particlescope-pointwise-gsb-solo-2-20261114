@@ -20,6 +20,7 @@ from .spatial import (
 from .texture import texture_report, radial_power_spectrum
 from .rendering import (
     png_bytes, heatmap_image, contact_sheet, histogram_chart, draw_annotations,
+    skeleton_overlay,
 )
 from .exports import (
     particle_csv, annotation_csv, result_json, geojson, binary_tiff,
@@ -33,7 +34,7 @@ from .color_analysis import (
 )
 from .morphology import (
     porosity_report, granulometry, distance_thickness, minkowski_curve,
-    box_counting, skeleton_report,
+    box_counting,
 )
 
 
@@ -132,6 +133,14 @@ def create_api(store, service, recipes, jobs):
         path = store.sample_dir(key)
         if kind in ('original', 'working', 'thumb', 'reference'):
             target = path / (kind + '.png')
+        elif kind in ('skeleton', 'skeleton-raw', 'skeleton-overlay'):
+            analysis_id = request.args.get('analysis_id')
+            result = service.require_result(key, analysis_id)
+            if kind == 'skeleton-overlay' and any(
+                request.args.get(name) not in (None, '') for name in ('phase', 'branch_id', 'node_id', 'spur')
+            ):
+                return _skeleton_image(key, analysis_id)
+            target = path / 'analyses' / result['id'] / (kind + '.png')
         elif kind in ('overlay', 'mask', 'labels'):
             analysis_id = request.args.get('analysis_id')
             result = service.require_result(key, analysis_id)
@@ -141,6 +150,25 @@ def create_api(store, service, recipes, jobs):
         if not target.exists():
             raise v.ValidationError('图像尚未生成')
         return send_file(target, max_age=0)
+
+    def _skeleton_image(key, analysis_id):
+        from .skeleton import skeleton_analysis
+        spur = v.real(request.args.get('spur', 0), '毛刺保留尺度', 0, 500)
+        phase = request.args.get('phase', 'pruned')
+        if phase not in ('pruned', 'raw'):
+            raise v.ValidationError('显示网络应为 pruned 或 raw')
+        report = service.skeleton_network(key, spur, analysis_id)
+        detail = report['raw_report'] if phase == 'raw' else report
+        branch_id = request.args.get('branch_id') or None
+        node_id = request.args.get('node_id') or None
+        branch_id = v.integer(branch_id, '支路编号', 1, 100000) if branch_id else None
+        node_id = v.integer(node_id, '结点编号', 1, 100000) if node_id else None
+        image = store.working_image(key)
+        return Response(
+            png_bytes(skeleton_overlay(image, detail, branch_id, node_id)),
+            mimetype='image/png',
+            headers={'Cache-Control': 'no-store'},
+        )
 
     @api.get('/samples/<key>/history')
     def image_history(key):
@@ -393,14 +421,88 @@ def create_api(store, service, recipes, jobs):
 
     @api.get('/samples/<key>/skeleton')
     def skeleton(key):
-        with store.lock:
-            report = service.require_result(key)
-            labels = service.labels(key)
-            ids = [r['id'] for r in included_rows(report)]
-            selected = region_mask((report['image_width'], report['image_height']), report['roi'])
-            mask, details = skeleton_report((labels > 0) & np.isin(labels, ids), selected, report['scale'])
-            store.image_write(store.sample_dir(key) / 'skeleton.png', Image.fromarray(mask.astype(np.uint8) * 255))
-            return jsonify(details)
+        data = request.args.to_dict()
+        return _skeleton_payload(key, data)
+
+    @api.post('/samples/<key>/skeleton')
+    def skeleton_run(key):
+        data = body()
+        data.setdefault('spur_threshold', 0)
+        return _skeleton_payload(key, data)
+
+    def _skeleton_payload(key, data):
+        spur = v.real(data.get('spur_threshold', 0), '毛刺保留尺度', 0, 500)
+        branch_id = data.get('branch_id', request.args.get('branch_id'))
+        node_id = data.get('node_id', request.args.get('node_id'))
+        analysis_id = data.get('analysis_id', request.args.get('analysis_id'))
+        if branch_id in (None, ''):
+            branch_id = None
+        else:
+            branch_id = v.integer(branch_id, '支路编号', 1, 100000)
+        if node_id in (None, ''):
+            node_id = None
+        else:
+            node_id = v.integer(node_id, '结点编号', 1, 100000)
+        phase = data.get('phase', request.args.get('phase'))
+        if phase in (None, ''):
+            phase = 'pruned'
+        if phase not in ('pruned', 'raw'):
+            raise v.ValidationError('显示网络应为 pruned 或 raw')
+        report = service.skeleton_network(key, spur, analysis_id)
+        result = service.require_result(key, analysis_id)
+        directory = store.sample_dir(key) / 'analyses' / result['id']
+        store.image_write(
+            directory / 'skeleton.png',
+            Image.fromarray(report['final_geometry'].astype(np.uint8) * 255),
+        )
+        store.image_write(
+            directory / 'skeleton-raw.png',
+            Image.fromarray(report['raw_geometry'].astype(np.uint8) * 255),
+        )
+        detail = report['raw_report'] if phase == 'raw' else report
+        image = store.working_image(key)
+        store.image_write(
+            directory / 'skeleton-overlay.png',
+            skeleton_overlay(image, detail, branch_id, node_id),
+        )
+        payload = {
+            name: detail[name] for name in (
+                'nodes', 'endpoints', 'junctions', 'branches', 'accounting',
+                'node_count', 'endpoint_count', 'junction_count', 'isolated_node_count',
+                'branch_count', 'loop_count', 'total_length_px', 'total_length',
+                'mean_branch_length_px', 'mean_branch_length', 'median_branch_length_px',
+                'longest_branch_px', 'shortest_branch_px', 'skeleton_pixels',
+                'unit', 'scale', 'image_width', 'image_height',
+            ) if name in detail
+        }
+        payload['phase'] = phase
+        payload['spur_threshold_px'] = round(spur, 6)
+        payload['spur_threshold'] = round(spur * report['scale'], 6)
+        payload['spur_threshold_unit'] = report['unit']
+        payload['network'] = {
+            name: detail[name] for name in (
+                'node_count', 'endpoint_count', 'junction_count', 'isolated_node_count',
+                'branch_count', 'loop_count', 'total_length_px', 'total_length',
+                'mean_branch_length_px', 'mean_branch_length', 'median_branch_length_px',
+                'longest_branch_px', 'shortest_branch_px', 'skeleton_pixels',
+            )
+        }
+        payload['raw_network'] = {name: value for name, value in report['raw_network'].items()}
+        payload['impact'] = report['impact']
+        payload['removed'] = report['removed']
+        payload['crossing_profile'] = (
+            report['raw_crossing_profile'] if phase == 'raw' else report['crossing_profile']
+        )
+        payload['current_crossing_profile'] = report['crossing_profile']
+        payload['raw_crossing_profile'] = report['raw_crossing_profile']
+        payload['warning'] = report['warning']
+        payload['image'] = 'skeleton-overlay.png'
+        payload['raw_image'] = 'skeleton-raw.png'
+        payload['final_image'] = 'skeleton.png'
+        payload['branch_id'] = branch_id
+        payload['node_id'] = node_id
+        payload['analysis_id'] = result['id']
+        return jsonify(payload)
 
     @api.get('/samples/<key>/minkowski')
     def minkowski(key):

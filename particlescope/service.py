@@ -225,6 +225,19 @@ class AnalysisService:
                 raise v.ValidationError('参数扫描限400万像素')
             return threshold_sweep(image, parameters, meta['roi'], np.linspace(start, stop, steps))
 
+    def skeleton_network(self, sample_id, spur_px=0, analysis_id=None):
+        from .skeleton import skeleton_analysis
+        from .imaging import region_mask
+        with self.store.lock:
+            result = self.require_result(sample_id, analysis_id)
+            labels = self.labels(sample_id, analysis_id)
+            ids = [row['id'] for row in result['particles'] if row.get('included', True)]
+            binary = (labels > 0) & np.isin(labels, ids)
+            selected = region_mask((result['image_width'], result['image_height']), result['roi'])
+            return skeleton_analysis(
+                binary, selected, result['scale'], result['calibration']['unit'], spur_px
+            )
+
     def sample_summary(self, sample_id):
         from .annotations import annotation_summary
         meta = self.store.meta(sample_id)

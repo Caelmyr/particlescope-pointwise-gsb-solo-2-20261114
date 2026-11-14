@@ -3,7 +3,6 @@ import numpy as np
 from scipy import ndimage as ndi
 from .imaging import disk
 from .statistics import scalar, describe
-from .validation import ValidationError
 
 
 def porosity_report(binary, selected):
@@ -151,26 +150,3 @@ def skeletonize(binary, max_iterations=500):
         if removed == 0:
             break
     return current[1:-1, 1:-1].astype(bool), iterations, removed == 0
-
-
-def skeleton_report(binary, selected, scale=1):
-    if binary.size > 4000000:
-        raise ValidationError('骨架分析限400万像素')
-    skeleton, iterations, converged = skeletonize(binary & selected)
-    neighbors = ndi.convolve(skeleton.astype(int), np.ones((3, 3), dtype=int)) - skeleton.astype(int)
-    endpoints = skeleton & (neighbors == 1)
-    branch = skeleton & (neighbors >= 3)
-    branch_labels, branch_count = ndi.label(branch)
-    components, count = ndi.label(skeleton, np.ones((3, 3)))
-    y, x = np.nonzero(endpoints)
-    return skeleton, {
-        'skeleton_pixels': int(skeleton.sum()),
-        'approximate_length': scalar(skeleton.sum() * scale),
-        'endpoint_count': int(endpoints.sum()),
-        'branch_region_count': int(branch_count),
-        'component_count': int(count),
-        'endpoints': [[int(a), int(b)] for a, b in zip(x, y)],
-        'iterations': iterations,
-        'converged': converged,
-        'warning': '长度为骨架像素数近似，未对斜边和分叉重叠修正',
-    }

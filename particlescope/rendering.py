@@ -222,6 +222,58 @@ def draw_annotations(image, annotations, calibration):
     return output.convert('RGB')
 
 
+def skeleton_overlay(image, report, highlight_branch=None, highlight_node=None):
+    """Draw the skeleton network with numbered nodes and branches."""
+    output = image.convert('RGBA')
+    draw = ImageDraw.Draw(output)
+    scale_factor = max(image.width, image.height, 1)
+    line_width = max(2, scale_factor // 320)
+    node_radius = max(3, scale_factor // 180)
+    text_font = font(max(10, scale_factor // 70))
+    text_size = getattr(text_font, 'size', max(10, scale_factor // 70))
+    branch_colors = [
+        (86, 232, 196), (247, 189, 98), (116, 176, 250), (238, 132, 170),
+        (188, 156, 244), (238, 220, 124), (105, 214, 232), (243, 156, 112),
+    ]
+    for branch in report.get('branches', []):
+        points = [tuple(point) for point in branch.get('points') or []]
+        if len(points) < 2:
+            continue
+        chosen = branch['id'] == highlight_branch
+        color = (255, 236, 120) if chosen else branch_colors[branch['id'] % len(branch_colors)]
+        draw.line(points, fill=color + (235,), width=line_width + (2 if chosen else 0), joint='curve')
+        middle = points[len(points) // 2]
+        draw.text(
+            (middle[0] + 3, middle[1] - text_size - 2),
+            f'B{branch["id"]}', font=text_font, fill=color, stroke_width=1, stroke_fill='black',
+        )
+    for node in report.get('junctions', []):
+        chosen = node['id'] == highlight_node
+        radius = node_radius + (3 if chosen else 0)
+        x, y = node['x'], node['y']
+        draw.rectangle(
+            (x - radius, y - radius, x + radius, y + radius),
+            outline=(255, 244, 170) if chosen else (255, 170, 64), width=max(2, line_width),
+        )
+        draw.text(
+            (x + radius + 2, y - radius - text_size),
+            f'J{node["id"]}', font=text_font, fill=(255, 208, 120), stroke_width=1, stroke_fill='black',
+        )
+    for node in report.get('endpoints', []):
+        chosen = node['id'] == highlight_node
+        radius = node_radius + (3 if chosen else 0)
+        x, y = node['x'], node['y']
+        draw.ellipse(
+            (x - radius, y - radius, x + radius, y + radius),
+            fill=(255, 214, 92) if chosen else (255, 120, 120), outline='black',
+        )
+        draw.text(
+            (x + radius + 2, y - radius - text_size),
+            f'E{node["id"]}', font=text_font, fill=(255, 158, 158), stroke_width=1, stroke_fill='black',
+        )
+    return output.convert('RGB')
+
+
 def png_bytes(image):
     stream = io.BytesIO()
     image.save(stream, format='PNG')

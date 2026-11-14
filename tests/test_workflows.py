@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 import numpy as np
 from scipy import ndimage as ndi
-from PIL import Image
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from particlescope import create_app
@@ -313,6 +313,99 @@ class Workflows(unittest.TestCase):
         self.assertGreater(skeleton.sum(), 20)
         self.assertLess(skeleton.sum(), 40)
         self.assertEqual(ndi.label(skeleton, np.ones((3, 3)))[1], 1)
+
+    def test_skeleton_oblique_and_horizontal_lengths_are_comparable(self):
+        from particlescope.skeleton import skeleton_analysis
+        horizontal = np.zeros((60, 320), dtype=bool)
+        horizontal[30, 10:310] = True
+        image = Image.new('L', (420, 420), 0)
+        draw = ImageDraw.Draw(image)
+        angle = np.radians(25)
+        length = 300
+        center = 210
+        draw.line(
+            [(center - np.cos(angle) * length / 2, center - np.sin(angle) * length / 2),
+             (center + np.cos(angle) * length / 2, center + np.sin(angle) * length / 2)],
+            fill=255, width=9,
+        )
+        oblique = np.asarray(image) > 127
+        straight = skeleton_analysis(horizontal, np.ones_like(horizontal), 1, 'px', 0)
+        slanted = skeleton_analysis(oblique, np.ones_like(oblique), 1, 'px', 0)
+        self.assertEqual(straight['network']['branch_count'], 1)
+        self.assertEqual(slanted['network']['branch_count'], 1)
+        self.assertEqual(straight['network']['junction_count'], 0)
+        self.assertEqual(slanted['network']['junction_count'], 0)
+        for report in (straight, slanted):
+            self.assertAlmostEqual(report['accounting']['unassigned_pixels'], 0)
+        self.assertAlmostEqual(
+            slanted['network']['total_length_px'] / straight['network']['total_length_px'], 1.0, delta=0.05
+        )
+
+    def test_skeleton_nodes_branches_loops_and_spur_effect(self):
+        from particlescope.skeleton import skeleton_analysis
+        mask = np.zeros((160, 220), dtype=bool)
+        mask[78:83, 20:200] = True
+        mask[40:80, 108:113] = True
+        mask[62:80, 60:65] = True
+        report = skeleton_analysis(mask, np.ones_like(mask), 1, 'px', 0)
+        self.assertEqual(report['network']['loop_count'], 0)
+        self.assertEqual(report['accounting']['unassigned_pixels'], 0)
+        self.assertGreaterEqual(report['network']['junction_count'], 1)
+        self.assertEqual(len(report['endpoints']), report['network']['endpoint_count'])
+        for node in report['endpoints'] + report['junctions']:
+            self.assertIn(node['type'], ('endpoint', 'junction'))
+            self.assertTrue(0 <= node['x'] < 220 and 0 <= node['y'] < 160)
+        for branch in report['branches']:
+            self.assertTrue(branch['points'])
+            self.assertAlmostEqual(
+                branch['length_px'], sum(
+                    np.hypot(b[0] - a[0], b[1] - a[1])
+                    for a, b in zip(branch['points'], branch['points'][1:])
+                ), delta=1.5,
+            )
+        pruned = skeleton_analysis(mask, np.ones_like(mask), 1, 'px', 30)
+        self.assertGreater(pruned['impact']['removed_spur_count'], 0)
+        self.assertLess(pruned['network']['endpoint_count'], report['network']['endpoint_count'])
+        self.assertAlmostEqual(report['raw_network']['total_length_px'], report['network']['total_length_px'])
+        self.assertLess(pruned['network']['total_length_px'], report['network']['total_length_px'])
+        ring = np.zeros((220, 220), dtype=bool)
+        yy, xx = np.indices(ring.shape)
+        radius = np.hypot(yy - 110, xx - 110)
+        ring[(radius > 58) & (radius < 62)] = True
+        loop = skeleton_analysis(ring, np.ones_like(ring), 1, 'px', 0)
+        self.assertEqual(loop['network']['loop_count'], 1)
+        self.assertEqual(loop['network']['branch_count'], 1)
+        self.assertAlmostEqual(loop['network']['total_length_px'], 2 * np.pi * 60, delta=4)
+
+    def test_skeleton_endpoint_preserves_analysis_and_mask(self):
+        sample = self.demo('fibers')
+        first = self.analyze(sample, method='otsu')
+        report = self.request('GET', sample, 'skeleton')
+        self.assertGreater(report['network']['endpoint_count'], 0)
+        self.assertEqual(report['network']['loop_count'], 0)
+        self.assertAlmostEqual(report['accounting']['unassigned_pixels'], 0)
+        for branch in report['branches']:
+            self.assertGreater(branch['length_px'], 0)
+            self.assertGreaterEqual(branch['length_px'], branch['length'] * 0.999)
+        pruned = self.request('POST', sample, 'skeleton', {'spur_threshold': 5})
+        self.assertGreaterEqual(report['network']['skeleton_pixels'], pruned['network']['skeleton_pixels'])
+        self.assertGreaterEqual(pruned['impact']['removed_spur_count'], 0)
+        again = self.request('GET', sample, 'result')
+        self.assertEqual(again['id'], first['id'])
+        self.assertAlmostEqual(again['mean_diameter'], first['mean_diameter'])
+        store = self.app.extensions['store']
+        reference = np.asarray(Image.open(store.sample_dir(sample['id']) / 'reference.png'))
+        self.assertGreater(int((reference > 0).sum()), 0)
+        current = np.asarray(Image.open(store.sample_dir(sample['id']) / 'analyses' / first['id'] / 'mask.png'))
+        self.assertEqual(int((current > 0).sum()), sum(p['area_px'] for p in first['particles']))
+        raw = self.request('GET', sample, 'skeleton?phase=raw')
+        self.assertEqual(raw['phase'], 'raw')
+        selected = self.request('GET', sample, 'skeleton?branch_id=3&node_id=3')
+        self.assertEqual(selected['branch_id'], 3)
+        self.assertEqual(selected['node_id'], 3)
+        overlay = self.client.get('/api/samples/' + sample['id'] + '/image/skeleton-overlay')
+        self.assertEqual(overlay.status_code, 200)
+        overlay.close()
 
     def test_crofton_circle_approximation(self):
         y, x = np.indices((101, 101))

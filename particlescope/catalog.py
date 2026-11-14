@@ -170,8 +170,9 @@ def tool_catalog():
         ], '按不同结构元素开运算，不等同于逐颗粒粒径。',
     ))
     tools.append(tool(
-        'skeleton', '细化骨架分析', '形态', 'skeleton',
-        note='最多400万像素，输出骨架端点、分支和长度近似。',
+        'skeleton', '细化骨架网络', '形态', 'skeleton', 'POST', [
+            number('spur_threshold', '毛刺保留尺度（像素）', 0, 0, 500),
+        ], '输出可定位的端点、结点与支路；长度沿空间路径计算，斜向和水平纤维可比。',
     ))
     tools.append(tool(
         'minkowski', '阈值拓扑曲线', '形态', 'minkowski',
