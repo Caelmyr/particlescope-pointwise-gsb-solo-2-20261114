@@ -309,6 +309,24 @@ def create_api(store, service, recipes, jobs):
             report = service.require_result(key)
             return jsonify(ripley_k(included_rows(report), report['image_width'], report['image_height'], report['scale']))
 
+    @api.post('/samples/<key>/contacts')
+    def particle_contacts(key):
+        data = body()
+        gap = v.real(data.get('gap_px', 1), '允许间隙', 0, 20)
+        with store.lock:
+            return jsonify(service.contacts(key, gap))
+
+    @api.post('/samples/<key>/contacts/render')
+    def particle_contacts_render(key):
+        from .contacts import contact_network_image
+        data = body()
+        gap = v.real(data.get('gap_px', 1), '允许间隙', 0, 20)
+        with store.lock:
+            report = service.contacts(key, gap)
+            result = service.require_result(key)
+            image = contact_network_image(store.working_image(key), service.labels(key), result, report)
+            return image_response(image)
+
     @api.get('/samples/<key>/texture')
     def texture(key):
         levels = v.integer(request.args.get('levels', 32), '灰度级数', 4, 64)
@@ -523,6 +541,10 @@ def create_api(store, service, recipes, jobs):
                 return binary_response(particle_gallery_zip(store, service, key), 'particle-crops.zip', 'application/zip')
             if kind == 'annotations':
                 return binary_response(annotation_csv(store.annotations(key)), 'annotations.csv', 'text/csv')
+            if kind == 'contacts-csv':
+                from .contacts import contact_csv
+                gap = v.real(request.args.get('gap', 1), '允许间隙', 0, 20)
+                return binary_response(contact_csv(service.contacts(key, gap)), 'contacts.csv', 'text/csv')
             if kind == 'chart':
                 chart = histogram_chart(statistics_report(result)['number_distribution'])
                 return binary_response(png_bytes(chart), 'distribution.png', 'image/png')

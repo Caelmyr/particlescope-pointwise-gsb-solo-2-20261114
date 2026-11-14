@@ -18,8 +18,8 @@
     },
     {
       "file": "particlescope/api.py",
-      "effective_lines": 649,
-      "sha256": "d2f988feba7eabea9b167f635b8f6449c60f7d3dc4067ddabf25f0d98415fc0d"
+      "effective_lines": 672,
+      "sha256": "307ef869c5084b6a5db9b44e191c02c087947467be811690048c01f56782376e"
     },
     {
       "file": "particlescope/boundaries.py",
@@ -42,9 +42,14 @@
       "sha256": "dd93525e42b7e274a4f721ef86c1cd83d5b67be905758b9d1f01c1b932e68ed3"
     },
     {
+      "file": "particlescope/contacts.py",
+      "effective_lines": 283,
+      "sha256": "07ece1e2d0d2294697aa8e5864b1b891217454bfb1300b4e5a3ba625805829a1"
+    },
+    {
       "file": "particlescope/exports.py",
-      "effective_lines": 153,
-      "sha256": "ede33213bbd10b9f8b75684afe57d9c599f061076cfd052c76578e2a6e3bfd27"
+      "effective_lines": 170,
+      "sha256": "8376f2be3fe056124f08cca89bf9d6d9813a0b34cb2e32224cd600314a5af0f5"
     },
     {
       "file": "particlescope/imaging.py",
@@ -98,8 +103,8 @@
     },
     {
       "file": "particlescope/service.py",
-      "effective_lines": 222,
-      "sha256": "1f5f9df2cbbe15932c6240d00f6da5263ddcf3ecabd64a356d403007cb88a297"
+      "effective_lines": 235,
+      "sha256": "3af1d4ea4e505ced6f0a0395e9c3ffc4c18866c3436dd69f13cb13807ed0481d"
     },
     {
       "file": "particlescope/spatial.py",
@@ -137,6 +142,6 @@
       "sha256": "31f7f2906c519ff841ab6bef69a0ba7671da613413ab94c47545d10fb0fa6934"
     }
   ],
-  "total": 5134,
+  "total": 5470,
   "passes_5000": true
 }

@@ -5,6 +5,13 @@ test_boundary_and_block_uncertainty (test_workflows.Workflows.test_boundary_and_
 test_bright_fluorescence (test_workflows.Workflows.test_bright_fluorescence) ... ok
 test_calibration_scales_lengths_and_areas (test_workflows.Workflows.test_calibration_scales_lengths_and_areas) ... ok
 test_color_texture_and_profile (test_workflows.Workflows.test_color_texture_and_profile) ... ok
+test_contact_network_concave_pair_has_two_zones (test_workflows.Workflows.test_contact_network_concave_pair_has_two_zones) ... ok
+test_contact_network_elongated_single_extended_zone (test_workflows.Workflows.test_contact_network_elongated_single_extended_zone) ... ok
+test_contact_network_excluded_particle_cannot_bridge (test_workflows.Workflows.test_contact_network_excluded_particle_cannot_bridge) ... ok
+test_contact_network_exclusion_breaks_chain (test_workflows.Workflows.test_contact_network_exclusion_breaks_chain) ... ok
+test_contact_network_image_and_csv_download (test_workflows.Workflows.test_contact_network_image_and_csv_download) ... ok
+test_contact_network_isolated_demo_has_no_contacts (test_workflows.Workflows.test_contact_network_isolated_demo_has_no_contacts) ... ok
+test_contact_network_touching_pairs (test_workflows.Workflows.test_contact_network_touching_pairs) ... ok
 test_crofton_circle_approximation (test_workflows.Workflows.test_crofton_circle_approximation) ... ok
 test_export_contents_and_report (test_workflows.Workflows.test_export_contents_and_report) ... ok
 test_filter_preserves_detection_and_history (test_workflows.Workflows.test_filter_preserves_detection_and_history) ... ok
@@ -25,6 +32,6 @@ test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_recon
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 32 tests in 14.564s
 
 OK

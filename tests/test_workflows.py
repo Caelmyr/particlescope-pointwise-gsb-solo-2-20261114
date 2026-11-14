@@ -320,6 +320,120 @@ class Workflows(unittest.TestCase):
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
 
+    def test_contact_network_touching_pairs(self):
+        sample = self.demo('touching')
+        result = self.analyze(sample, method='otsu', split_touching=True, seed_distance=20)
+        self.assertEqual(result['count'], 24)
+        report = self.request('POST', sample, 'contacts', {'gap_px': 1})
+        self.assertEqual(report['pair_count'], 12)
+        self.assertEqual(report['contact_count'], 12)
+        self.assertEqual(report['cluster_count'], 12)
+        self.assertTrue(all(c['size'] == 2 for c in report['clusters']))
+        self.assertEqual(report['isolated_count'], 0)
+        ids = {p['id'] for p in result['particles']}
+        for contact in report['contacts']:
+            self.assertIn(contact['particle_a'], ids)
+            self.assertIn(contact['particle_b'], ids)
+            self.assertLessEqual(contact['gap_px'], 1)
+        adjacency_pairs = {pid for pid, neighbors in report['adjacency'].items() if neighbors}
+        self.assertEqual(len(adjacency_pairs), 24)
+
+    def test_contact_network_isolated_demo_has_no_contacts(self):
+        sample = self.demo()
+        self.analyze(sample, method='otsu')
+        report = self.request('POST', sample, 'contacts', {'gap_px': 1})
+        self.assertEqual(report['pair_count'], 0)
+        self.assertEqual(report['contact_count'], 0)
+        self.assertEqual(report['cluster_count'], 0)
+        self.assertEqual(report['isolated_count'], 40)
+
+    def test_contact_network_excluded_particle_cannot_bridge(self):
+        sample = self.demo('touching')
+        self.analyze(sample, method='otsu', split_touching=True, seed_distance=20)
+        first = self.request('POST', sample, 'contacts', {'gap_px': 1})
+        pair = first['pairs'][0]
+        excluded_id = pair['particle_a']
+        partner_id = pair['particle_b']
+        self.request('POST', sample, 'filter', {
+            'revision': self.meta(sample)['revision'], 'exclude_ids': [excluded_id],
+        })
+        report = self.request('POST', sample, 'contacts', {'gap_px': 1})
+        self.assertEqual(report['pair_count'], 11)
+        self.assertEqual(report['excluded_count'], 1)
+        pair_ids = {p['particle_a'] for p in report['pairs']} | {p['particle_b'] for p in report['pairs']}
+        self.assertNotIn(excluded_id, pair_ids)
+        self.assertNotIn(str(excluded_id), report['adjacency'])
+        self.assertIn(partner_id, report['isolated_ids'])
+
+    def test_contact_network_concave_pair_has_two_zones(self):
+        from particlescope.contacts import contact_network
+        labels = np.zeros((30, 40), dtype=np.int32)
+        labels[2:7, 2:30] = 1
+        labels[22:27, 2:30] = 1
+        labels[2:27, 2:7] = 1
+        labels[7:22, 14:18] = 2
+        result = {'id': 'x', 'scale': 1, 'unit': 'px', 'particles': [
+            {'id': 1, 'included': True, 'bbox_x': 2, 'bbox_y': 2, 'bbox_width': 28, 'bbox_height': 25},
+            {'id': 2, 'included': True, 'bbox_x': 14, 'bbox_y': 7, 'bbox_width': 4, 'bbox_height': 15},
+        ]}
+        report = contact_network(labels, result, 0)
+        self.assertEqual(report['pair_count'], 1)
+        self.assertEqual(report['pairs'][0]['contact_count'], 2)
+        self.assertEqual(report['multi_contact_pairs'], 1)
+        ys = sorted(c['y'] for c in report['contacts'])
+        self.assertAlmostEqual(ys[0], 6.5, delta=2)
+        self.assertAlmostEqual(ys[1], 21.5, delta=2)
+        self.assertEqual(len(report['pairs'][0]['contact_ids']), 2)
+
+    def test_contact_network_elongated_single_extended_zone(self):
+        from particlescope.contacts import contact_network
+        labels = np.zeros((30, 60), dtype=np.int32)
+        labels[10:13, 5:55] = 1
+        labels[14:17, 5:55] = 2
+        result = {'id': 'x', 'scale': 1, 'unit': 'px', 'particles': [
+            {'id': 1, 'included': True, 'bbox_x': 5, 'bbox_y': 10, 'bbox_width': 50, 'bbox_height': 3},
+            {'id': 2, 'included': True, 'bbox_x': 5, 'bbox_y': 14, 'bbox_width': 50, 'bbox_height': 3},
+        ]}
+        report = contact_network(labels, result, 1)
+        self.assertEqual(report['pair_count'], 1)
+        self.assertEqual(report['pairs'][0]['contact_count'], 1)
+        self.assertAlmostEqual(report['contacts'][0]['gap_px'], 1, delta=0.01)
+        self.assertGreaterEqual(report['contacts'][0]['boundary_pixels'], 40)
+        far = contact_network(labels, result, 0.5)
+        self.assertEqual(far['pair_count'], 0)
+
+    def test_contact_network_exclusion_breaks_chain(self):
+        from particlescope.contacts import contact_network
+        labels = np.zeros((10, 30), dtype=np.int32)
+        labels[2:8, 2:7] = 1
+        labels[2:8, 7:12] = 2
+        labels[2:8, 12:17] = 3
+        result = {'id': 'x', 'scale': 1, 'unit': 'px', 'particles': [
+            {'id': 1, 'included': True, 'bbox_x': 2, 'bbox_y': 2, 'bbox_width': 5, 'bbox_height': 6},
+            {'id': 2, 'included': True, 'bbox_x': 7, 'bbox_y': 2, 'bbox_width': 5, 'bbox_height': 6},
+            {'id': 3, 'included': True, 'bbox_x': 12, 'bbox_y': 2, 'bbox_width': 5, 'bbox_height': 6},
+        ]}
+        report = contact_network(labels, result, 0)
+        self.assertEqual(report['cluster_count'], 1)
+        self.assertEqual(report['clusters'][0]['particle_ids'], [1, 2, 3])
+        result['particles'][1]['included'] = False
+        broken = contact_network(labels, result, 0)
+        self.assertEqual(broken['pair_count'], 0)
+        self.assertEqual(broken['cluster_count'], 0)
+        self.assertEqual(broken['isolated_ids'], [1, 3])
+
+    def test_contact_network_image_and_csv_download(self):
+        sample = self.demo('touching')
+        self.analyze(sample, method='otsu', split_touching=True, seed_distance=20)
+        image = self.request('POST', sample, 'contacts/render', {'gap_px': 1})
+        self.assertTrue(image.startswith(b'\x89PNG'))
+        csv_data = self.request('GET', sample, 'export/contacts-csv?gap=1')
+        lines = csv_data.decode('utf-8-sig').strip().splitlines()
+        self.assertEqual(len(lines), 13)
+        self.assertIn('particle_a', lines[0])
+        bad = self.client.post('/api/samples/' + sample['id'] + '/contacts', json={'gap_px': 30})
+        self.assertEqual(bad.status_code, 400)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

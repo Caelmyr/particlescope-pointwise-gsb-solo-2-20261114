@@ -5,7 +5,7 @@ const stringFields = new Set(['method','polarity','channel']);
 let loadedImage = null;
 let objectURL = null;
 let jobTimer = null;
-const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率'};
+const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率',included_count:'纳入颗粒数',excluded_count:'被筛除颗粒数',pair_count:'接触颗粒对数',contact_count:'接触位置数',multi_contact_pairs:'多处接触的颗粒对',cluster_count:'连通团簇数',largest_cluster_size:'最大团簇颗粒数',isolated_count:'孤立颗粒数',gap_px:'允许间隙 px'};
 function label(key){return labels[key] || key.replaceAll('_',' ')}
 function el(tag, text, cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
 function status(message,error=false){$('status').textContent=message;$('status').classList.toggle('error',error)}
@@ -283,6 +283,70 @@ $('history').onclick=guard(async()=>{
   for(const result of analyses){const card=el('div',undefined,'history-card');card.append(el('h3',`${result.created_at} · ${result.count} 个颗粒 · 图像v${result.image_revision}`));const check=el('input');check.type='checkbox';check.onchange=()=>{check.checked?selects.push(result.id):selects.splice(selects.indexOf(result.id),1)};const l=el('label',' 选择对比');l.prepend(check);card.append(l);const button=el('button','设为当前分析');button.onclick=guard(async()=>{await mutate('切换分析版本…',()=>post(url('analyses/select'),{analysis_id:result.id,revision:state.sample.revision}));state.view='overlay';showImage();$('dialog').close()});card.append(button);body.append(card)}
   const compare=el('button','比较勾选的两个分析版本');compare.onclick=guard(async()=>{if(selects.length!==2)throw Error('请勾选两个分析版本');const result=await post('/api/compare-versions',{sample_id:state.sample.id,first:selects[0],second:selects[1]});renderOutput(result,openDialog('分析版本差异'))});body.append(compare);
 });
+$('contacts').onclick=guard(openContacts);
+function openContacts(){
+  requireResult();
+  const body=openDialog('颗粒接触网络');
+  const layout=el('div',undefined,'dialog-grid');const controls=el('div'),output=el('div',undefined,'tool-output');
+  controls.append(el('p','按实例边界（而非质心距离）判定接触：表面间隙 = 两颗粒边界最近距离 − 1 px，直接相邻为 0，间隔一个背景像素为 1。同一对颗粒可有多处接触；被筛除颗粒显示为灰色，不参与组网。','hint'));
+  controls.append(makeForm([num('gap_px','允许表面间隙 px',1,0,20)],'计算接触网络',async data=>{
+    output.replaceChildren(el('p','正在计算接触网络…','muted'));
+    let report,image;
+    await task('正在计算接触网络…',async()=>{
+      report=await post(url('contacts'),data);
+      image=await post(url('contacts/render'),data);
+    });
+    output.replaceChildren();renderContacts(report,image,output,data.gap_px);
+    status(`接触网络完成：${report.pair_count} 对接触、${report.contact_count} 处接触位置、${report.cluster_count} 个连通团簇`);
+  }));
+  layout.append(controls,output);body.append(layout);
+  controls.querySelector('form').requestSubmit();
+}
+function renderContacts(report,image,output,gap){
+  const cards={included_count:report.included_count,excluded_count:report.excluded_count,pair_count:report.pair_count,contact_count:report.contact_count,multi_contact_pairs:report.multi_contact_pairs,cluster_count:report.cluster_count,largest_cluster_size:report.largest_cluster_size,isolated_count:report.isolated_count};
+  renderOutput(cards,output);
+  if(objectURL)URL.revokeObjectURL(objectURL);objectURL=URL.createObjectURL(image);
+  const img=el('img');img.src=objectURL;output.append(img);
+  const downloads=el('div',undefined,'link-grid');
+  const png=el('a','↓ 网络图 PNG');png.href=objectURL;png.download='contact-network.png';
+  const csv=el('a','↓ 接触列表 CSV');csv.href=url('export/contacts-csv')+'?gap='+encodeURIComponent(gap);
+  downloads.append(png,csv);output.append(downloads);
+  const save=el('button','下载完整结果 JSON（含邻接与团簇）');save.onclick=()=>downloadJSON(report,'contact-network.json');output.append(save);
+  output.append(el('h3',`接触位置（${report.contact_count} 处）`));
+  if(!report.contacts.length)output.append(el('p','当前允许间隙下没有接触；可增大间隙重新计算。','muted'));
+  else{
+    const wrap=el('div',undefined,'table-wrap');const table=el('table');const head=el('thead');const hr=el('tr');
+    for(const h of ['接触编号','颗粒A','颗粒B','间隙 px','间隙 '+report.unit,'位置 x','位置 y','边界像素','团簇'])hr.append(el('th',h));
+    head.append(hr);table.append(head);const tbody=el('tbody');
+    for(const c of report.contacts.slice(0,500)){const tr=el('tr');for(const v of [c.contact_id,c.particle_a,c.particle_b,c.gap_px,c.gap_scaled,c.x,c.y,c.boundary_pixels,c.cluster_id])tr.append(el('td',fmt(v)));tbody.append(tr)}
+    table.append(tbody);wrap.append(table);output.append(wrap);
+    if(report.contacts.length>500)output.append(el('p',`显示前500处，共${report.contact_count}处；完整列表请下载CSV或JSON`,'muted'));
+  }
+  const multi=report.pairs.filter(p=>p.contact_count>1);
+  if(multi.length){
+    output.append(el('h3',`同一对颗粒的多处接触（${multi.length} 对）`));
+    const wrap=el('div',undefined,'table-wrap');const table=el('table');const head=el('thead');const hr=el('tr');
+    for(const h of ['颗粒A','颗粒B','接触处数','最小间隙 px','接触编号'])hr.append(el('th',h));
+    head.append(hr);table.append(head);const tbody=el('tbody');
+    for(const p of multi.slice(0,200)){const tr=el('tr');for(const v of [p.particle_a,p.particle_b,p.contact_count,p.min_gap_px,p.contact_ids.join(', ')])tr.append(el('td',fmt(v)));tbody.append(tr)}
+    table.append(tbody);wrap.append(table);output.append(wrap);
+  }
+  output.append(el('h3',`连通团簇（${report.cluster_count} 个）`));
+  if(!report.clusters.length)output.append(el('p','没有形成团簇，所有纳入颗粒均为孤立。','muted'));
+  for(const cluster of report.clusters.slice(0,100)){
+    const section=el('details',undefined,'output-section');
+    section.append(el('summary',`团簇 ${cluster.cluster_id} · ${cluster.size} 个颗粒 · ${cluster.pair_count} 对接触`));
+    section.append(el('p','颗粒编号：'+cluster.particle_ids.join(', '),'muted'));
+    output.append(section);
+  }
+  if(report.clusters.length>100)output.append(el('p',`显示前100个团簇，共${report.cluster_count}个；完整列表请下载JSON`,'muted'));
+  const adj=el('details',undefined,'output-section');adj.append(el('summary','邻接关系（颗粒编号 → 接触的邻居）'));
+  const entries=Object.entries(report.adjacency).filter(([,v])=>v.length);
+  if(!entries.length)adj.append(el('p','无邻接边','muted'));
+  for(const [pid,neighbors] of entries.slice(0,300))adj.append(el('p',`#${pid} → ${neighbors.join(', ')}`,'muted'));
+  if(entries.length>300)adj.append(el('p',`显示前300条，共${entries.length}条；完整邻接表请下载JSON`,'muted'));
+  output.append(adj);
+}
 function chart(series,title,container,options={}){
   if(!series.length||!series.some(s=>s.values.length))return;
   const canvas=el('canvas');canvas.width=900;canvas.height=300;container.append(canvas);const c=canvas.getContext('2d');c.fillStyle='#10202b';c.fillRect(0,0,900,300);c.fillStyle='#cde3ea';c.font='14px sans-serif';c.fillText(title,18,24);

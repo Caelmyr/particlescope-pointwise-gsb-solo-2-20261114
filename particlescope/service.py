@@ -13,6 +13,7 @@ from .annotations import recalibrate_annotations
 class AnalysisService:
     def __init__(self, store):
         self.store = store
+        self._contact_cache = {}
 
     def require_result(self, sample_id, analysis_id=None):
         result = self.store.result(sample_id, analysis_id)
@@ -146,6 +147,19 @@ class AnalysisService:
                 result['id'],
                 filters,
             )
+
+    def contacts(self, sample_id, gap_px):
+        with self.store.lock:
+            result = self.require_result(sample_id)
+            key = (result['id'], round(float(gap_px), 6))
+            cached = self._contact_cache.get(key)
+            if cached is None:
+                from .contacts import contact_network
+                cached = contact_network(self.labels(sample_id), result, gap_px)
+                if len(self._contact_cache) >= 6:
+                    self._contact_cache.pop(next(iter(self._contact_cache)))
+                self._contact_cache[key] = cached
+            return cached
 
     def select_analysis(self, sample_id, analysis_id, expected_revision=None):
         with self.store.transaction(sample_id, expected_revision) as (_, meta):
