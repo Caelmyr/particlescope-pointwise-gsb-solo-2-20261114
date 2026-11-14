@@ -1,7 +1,7 @@
 import math
 import numpy as np
 from scipy import ndimage as ndi
-from scipy.spatial import ConvexHull, QhullError, distance
+from scipy.spatial import ConvexHull, QhullError
 from .validation import ValidationError
 
 
@@ -63,41 +63,134 @@ def covariance_axes(x, y):
     }
 
 
-def hull_metrics(mask, x, y):
-    boundary = mask & ~ndi.binary_erosion(mask)
-    by, bx = np.nonzero(boundary)
-    if len(bx) > 10000:
-        step = math.ceil(len(bx) / 10000)
-        bx = bx[::step]
-        by = by[::step]
-    points = np.column_stack((bx, by)).astype(float)
-    if len(points) < 3:
-        return {'area': float(len(x)), 'perimeter': crofton_perimeter(mask), 'max': 1, 'min': 1}
+PIXEL_CORNERS = np.array([
+    [-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5],
+], dtype=float)
+HULL_CHUNK = 20000
+
+
+def _cross(first, second):
+    return float(first[0] * second[1] - first[1] * second[0])
+
+
+def _convex_hull(points):
+    points = np.asarray(points, dtype=float)
+    if len(points) <= 2:
+        return points
     try:
-        hull = ConvexHull(points)
+        return points[ConvexHull(points).vertices]
     except QhullError:
-        span = float(np.ptp(x)) + 1
-        return {'area': float(len(x)), 'perimeter': 2 * span + 2, 'max': span, 'min': 1}
-    vertices = points[hull.vertices]
-    if len(vertices) > 2000:
-        vertices = vertices[::math.ceil(len(vertices) / 2000)]
-    maximum = float(distance.pdist(vertices).max()) + 1
-    widths = []
-    for index, a in enumerate(vertices):
-        b = vertices[(index + 1) % len(vertices)]
-        edge = b - a
-        norm = np.linalg.norm(edge)
+        # Collinear points: the hull is the segment between the two extremes.
+        order = np.lexsort((points[:, 1], points[:, 0]))
+        return points[order[[0, -1]]]
+
+
+def _cell_hull(mask):
+    # A foreground pixel occupies its whole unit cell, so the union's convex
+    # hull is the Minkowski sum of the pixel-centre hull and one cell square.
+    # Only outlying pixels can contribute: an interior pixel lies inside the
+    # hull of its 4-neighbours located half a cell away, and the same holds
+    # after each cell is expanded, so dropping strict interior pixels is exact.
+    border = mask & ~ndi.binary_erosion(mask)
+    by, bx = np.nonzero(border)
+    if not len(bx):
+        return np.empty((0, 2))
+    centers = np.column_stack((bx, by)).astype(float)
+    # Merge chunk-wise hulls so memory stays bounded on very jagged masks;
+    # the hull of a union equals the hull of the merged per-chunk hulls.
+    parts = []
+    for start in range(0, len(centers), HULL_CHUNK):
+        chunk = _convex_hull(centers[start:start + HULL_CHUNK])
+        corners = (chunk[:, None, :] + PIXEL_CORNERS[None, :, :]).reshape(-1, 2)
+        parts.append(_convex_hull(corners))
+    return _convex_hull(np.vstack(parts))
+
+
+def _polygon_area(vertices):
+    x = vertices[:, 0]
+    y = vertices[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _polygon_perimeter(vertices):
+    closed = np.vstack((vertices, vertices[:1]))
+    return float(np.linalg.norm(np.diff(closed, axis=0), axis=1).sum())
+
+
+def _hull_diameter(vertices):
+    # Rotating calipers over the hull: the longest chord of a convex polygon
+    # joins two vertices, found by advancing a support vertex per hull edge.
+    count = len(vertices)
+    if count < 2:
+        return 0.0
+    if count == 2:
+        return float(np.linalg.norm(vertices[1] - vertices[0]))
+    k = 1
+    maximum = 0.0
+    for index in range(count):
+        following = (index + 1) % count
+        edge = vertices[following] - vertices[index]
+        for _ in range(count):
+            next_k = (k + 1) % count
+            here = abs(_cross(edge, vertices[k] - vertices[index]))
+            there = abs(_cross(edge, vertices[next_k] - vertices[index]))
+            if there <= here:
+                break
+            k = next_k
+        maximum = max(
+            maximum,
+            float(np.linalg.norm(vertices[index] - vertices[k])),
+            float(np.linalg.norm(vertices[following] - vertices[k])),
+        )
+    return maximum
+
+
+def _hull_min_width(vertices):
+    # Minimal caliper width: the smallest distance between two parallel
+    # support lines, attained perpendicular to one of the hull's edges.
+    count = len(vertices)
+    if count < 3:
+        return 0.0
+    k = 1
+    minimum = math.inf
+    for index in range(count):
+        following = (index + 1) % count
+        edge = vertices[following] - vertices[index]
+        norm = float(np.linalg.norm(edge))
         if norm == 0:
             continue
-        normal = np.array([-edge[1], edge[0]]) / norm
-        projection = vertices @ normal
-        widths.append(float(projection.max() - projection.min()) + 1)
-    area = max(float(hull.volume), float(len(x)))
+        for _ in range(count):
+            next_k = (k + 1) % count
+            here = abs(_cross(edge, vertices[k] - vertices[index]))
+            there = abs(_cross(edge, vertices[next_k] - vertices[index]))
+            if there <= here:
+                break
+            k = next_k
+        minimum = min(minimum, here / norm)
+    return float(minimum) if math.isfinite(minimum) else 0.0
+
+
+def hull_metrics(mask, x=None, y=None):
+    """Convex geometry of the planar region occupied by the mask's pixels.
+
+    Each foreground pixel covers the unit square centred on its grid position,
+    and the object is the union of those squares. Area, perimeter and the two
+    Feret diameters are all measured on that same shape, so a single pixel,
+    a thin line and a broad outline follow one geometric definition: a one
+    pixel line is a one pixel wide band whatever its direction, and its widest
+    Feret diameter spans the band's true extent without an arbitrary offset.
+
+    The optional ``x``/``y`` arguments are accepted for call-site compatibility
+    and ignored; pixel cells are derived from the mask itself.
+    """
+    vertices = _cell_hull(mask)
+    if len(vertices) < 3:
+        return {'area': 0.0, 'perimeter': 0.0, 'max': 0.0, 'min': 0.0}
     return {
-        'area': area,
-        'perimeter': float(hull.area),
-        'max': maximum,
-        'min': min(widths) if widths else 1,
+        'area': _polygon_area(vertices),
+        'perimeter': _polygon_perimeter(vertices),
+        'max': _hull_diameter(vertices),
+        'min': _hull_min_width(vertices),
     }
 
 
@@ -129,7 +222,7 @@ def measure_object(object_id, region, mask, gray, scale, image_shape, roi_bounda
     center_y = float(y.mean() + slices_y.start)
     perimeter_px = crofton_perimeter(mask)
     axes = covariance_axes(x, y)
-    hull = hull_metrics(mask, x, y)
+    hull = hull_metrics(mask)
     border = (
         slices_x.start == 0 or slices_y.start == 0
         or slices_x.stop == image_shape[1]
@@ -162,7 +255,7 @@ def measure_object(object_id, region, mask, gray, scale, image_shape, roi_bounda
         'eccentricity': round_value(axes['eccentricity']),
         'aspect_ratio': round_value(axes['major'] / axes['minor']),
         'circularity': round_value(circularity),
-        'solidity': round_value(min(1, area_px / max(hull['area'], 1))),
+        'solidity': round_value(min(1, area_px / hull['area']) if hull['area'] > 0 else 1),
         'extent': round_value(area_px / (width * height)),
         'feret_max': round_value(hull['max'] * scale),
         'feret_min': round_value(hull['min'] * scale),

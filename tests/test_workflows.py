@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import sys
 import tempfile
 import time
@@ -16,7 +17,7 @@ from particlescope.rendering import png_bytes
 from particlescope.synthetic import generate_sample
 from particlescope.registration import phase_correlation, translate, affine_landmarks
 from particlescope.segmentation import evaluate_reference
-from particlescope.measurements import crofton_perimeter
+from particlescope.measurements import crofton_perimeter, hull_metrics
 from particlescope.morphology import skeletonize
 
 
@@ -319,6 +320,92 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+    def test_feret_geometry_of_pixel_cells(self):
+        single = np.zeros((9, 9), dtype=bool)
+        single[4, 4] = True
+        result = hull_metrics(single)
+        self.assertAlmostEqual(result['area'], 1)
+        self.assertAlmostEqual(result['min'], 1)
+        self.assertAlmostEqual(result['max'], math.sqrt(2))
+        self.assertAlmostEqual(result['perimeter'], 4)
+
+        # A one pixel wide line has unit width and the same 1 px cross-section
+        # whether it runs along an axis or diagonally; only its length changes.
+        for orientation in 'vh':
+            shape = (12, 1) if orientation == 'v' else (1, 12)
+            line = np.pad(np.ones(shape, dtype=bool), 4)
+            metrics = hull_metrics(line)
+            self.assertAlmostEqual(metrics['min'], 1)
+            self.assertAlmostEqual(metrics['area'], 12)
+
+        for size in (4, 9, 30):
+            diagonal = np.pad(np.eye(size, dtype=bool), 4)
+            metrics = hull_metrics(diagonal)
+            # Each rank-1 cell is a unit square, so the union's area is size
+            # plus the number of diagonal contacts, and the band stays 1 px
+            # wide perpendicular to its axis rather than widening by angle.
+            self.assertAlmostEqual(metrics['area'], 2 * size - 1)
+            self.assertAlmostEqual(metrics['min'], math.sqrt(2))
+            self.assertGreater(metrics['max'], math.sqrt(2) * (size - 1))
+            self.assertLess(metrics['max'], math.sqrt(2) * size + 1)
+
+    def test_feret_matches_discrete_union_geometry(self):
+        from scipy.spatial import ConvexHull
+        rng = np.random.default_rng(5)
+        offsets = np.array([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]])
+        for _ in range(60):
+            mask = rng.random((rng.integers(1, 18), rng.integers(1, 18))) < 0.5
+            if not np.any(mask):
+                continue
+            y, x = np.nonzero(mask)
+            points = np.unique((np.column_stack((x, y))[:, None, :] + offsets[None]).reshape(-1, 2), axis=0)
+            hull = ConvexHull(points)
+            vertices = points[hull.vertices]
+            metrics = hull_metrics(mask)
+            self.assertAlmostEqual(metrics['area'], hull.volume, places=9)
+            self.assertAlmostEqual(metrics['max'], np.max(
+                np.linalg.norm(vertices[:, None, :] - vertices[None, :, :], axis=2)), places=9)
+            widths = []
+            for index in range(len(vertices)):
+                edge = vertices[(index + 1) % len(vertices)] - vertices[index]
+                normal = np.array([-edge[1], edge[0]]) / np.linalg.norm(edge)
+                projection = vertices @ normal
+                widths.append(projection.max() - projection.min())
+            self.assertAlmostEqual(metrics['min'], min(widths), places=9)
+            self.assertLessEqual(metrics['min'], metrics['max'])
+            self.assertGreater(metrics['min'], 0)
+
+    def test_feret_calibration_and_export_agree(self):
+        sample = self.demo()
+        self.request('PUT', sample, 'calibration', {
+            'revision': self.meta(sample)['revision'], 'pixel_length': 20,
+            'physical_length': 10, 'unit': 'μm',
+        })
+        result = self.analyze(sample)
+        labels = self.app.extensions['analysis'].labels(sample['id'])
+        data = self.request('GET', sample, 'export/bundle')
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            exported = json.loads(archive.read('analysis.json'))
+            lines = archive.read('particles.csv').decode('utf-8-sig').splitlines()
+        header = lines[0].split(',')
+        column = header.index('feret_max')
+        self.assertEqual(len(exported['particles']), len(lines) - 1)
+        scale = result['scale']
+        for row in result['particles']:
+            self.assertGreaterEqual(row['feret_max'], row['feret_min'])
+            self.assertGreater(row['feret_min'], 0)
+            # The reported physical length is the same pixel geometry in the
+            # analysis result and in every export channel, scaled by
+            # calibration only.
+            expected = hull_metrics(labels == row['id'])
+            self.assertAlmostEqual(row['feret_max'], expected['max'] * scale, places=5)
+            self.assertAlmostEqual(row['feret_min'], expected['min'] * scale, places=5)
+        for csv_line, exported_row in zip(lines[1:], exported['particles']):
+            self.assertAlmostEqual(
+                float(csv_line.split(',')[column]), exported_row['feret_max'], places=6)
+            self.assertEqual(exported_row, next(
+                r for r in result['particles'] if r['id'] == exported_row['id']))
 
 
 if __name__ == '__main__':
