@@ -17,9 +17,11 @@ from .statistics import (
 from .spatial import (
     spatial_report, cluster_particles, radial_density, pair_correlation, ripley_k,
 )
+from .domains import domain_report
 from .texture import texture_report, radial_power_spectrum
 from .rendering import (
     png_bytes, heatmap_image, contact_sheet, histogram_chart, draw_annotations,
+    domain_overlay_image,
 )
 from .exports import (
     particle_csv, annotation_csv, result_json, geojson, binary_tiff,
@@ -99,7 +101,7 @@ def create_api(store, service, recipes, jobs):
     def import_demo():
         from .synthetic import generate_sample
         data = request.get_json(silent=True) or {}
-        kind = v.choice(data.get('kind', 'isolated'), '演示类型', ['isolated', 'touching', 'illumination', 'fluorescence', 'fibers', 'porous'])
+        kind = v.choice(data.get('kind', 'isolated'), '演示类型', ['isolated', 'touching', 'illumination', 'fluorescence', 'fibers', 'porous', 'domains'])
         image, truth, details = generate_sample(kind)
         stream = io.BytesIO(png_bytes(image))
         meta = store.import_image(stream, details['name'])
@@ -308,6 +310,22 @@ def create_api(store, service, recipes, jobs):
         with store.lock:
             report = service.require_result(key)
             return jsonify(ripley_k(included_rows(report), report['image_width'], report['image_height'], report['scale']))
+
+    @api.post('/samples/<key>/lattice-domains')
+    def lattice_domains(key):
+        parameters = v.domain_parameters(body())
+        with store.lock:
+            report = service.require_result(key)
+            return jsonify(domain_report(report, parameters))
+
+    @api.post('/samples/<key>/lattice-domains/image')
+    def lattice_domain_image(key):
+        parameters = v.domain_parameters(body())
+        with store.lock:
+            report = service.require_result(key)
+            domain = domain_report(report, parameters)
+            image = domain_overlay_image(store.working_image(key), included_rows(report), domain)
+            return image_response(image)
 
     @api.get('/samples/<key>/texture')
     def texture(key):

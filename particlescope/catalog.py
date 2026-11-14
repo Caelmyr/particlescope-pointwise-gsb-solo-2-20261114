@@ -132,6 +132,36 @@ def tool_catalog():
         note='最多5000个颗粒，无边缘修正，L(r)-r用于探索聚集尺度。',
     ))
     tools.append(tool(
+        'lattice-domains', '晶格畴识别与畴界', '空间', 'lattice-domains', 'POST', [
+            select('lattice', '晶格类型', 'auto', [
+                ('auto', '自动判别（六方/四方）'),
+                ('hexagonal', '六方晶格（三角排列）'),
+                ('square', '四方晶格（方格排列）'),
+            ]),
+            number('shell_count', '识别尺度（邻居壳层）', 1, 1, 4, 1),
+            number('order_threshold', '键序阈值（留空自动）', 0.55, 0.05, 0.98),
+            number('similarity', '取向一致性阈值', 0.85, 0.5, 0.999),
+            number('spacing_tolerance', '间距容限（相对值）', 0.25, 0.05, 1.0),
+            number('minimum_domain_size', '最小畴颗粒数', 4, 1, 1000, 1),
+            number('spacing', '晶格间距（留空自动估计）', None, 0.000001),
+        ], '从质心键序识别局部取向、畴编号、畴界、点缺陷和无序区；只读测量，不修改原始分析。两种间距不会强连成同一晶格。',
+    ))
+    tools.append(tool(
+        'lattice-domains-image', '晶格畴叠加图', '空间', 'lattice-domains/image', 'POST', [
+            select('lattice', '晶格类型', 'auto', [
+                ('auto', '自动判别（六方/四方）'),
+                ('hexagonal', '六方晶格（三角排列）'),
+                ('square', '四方晶格（方格排列）'),
+            ]),
+            number('shell_count', '识别尺度（邻居壳层）', 1, 1, 4, 1),
+            number('order_threshold', '键序阈值（留空自动）', 0.55, 0.05, 0.98),
+            number('similarity', '取向一致性阈值', 0.85, 0.5, 0.999),
+            number('spacing_tolerance', '间距容限（相对值）', 0.25, 0.05, 1.0),
+            number('minimum_domain_size', '最小畴颗粒数', 4, 1, 1000, 1),
+            number('spacing', '晶格间距（留空自动估计）', None, 0.000001),
+        ], '同参数在原图上着色各畴、标记畴界/缺陷/无序区；调整尺度后重新生成，不影响颗粒测量。', output='image',
+    ))
+    tools.append(tool(
         'texture', '共生矩阵与局部纹理', '纹理', 'texture',
         note='四方向GLCM、局部二值模式、梯度方向和多尺度细节。',
     ))

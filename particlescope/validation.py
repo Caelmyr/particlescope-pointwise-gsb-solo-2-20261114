@@ -213,6 +213,27 @@ def revision(body):
     return integer(body.get('revision'), '修订号', 0)
 
 
+def domain_parameters(body):
+    body = mapping(body, '晶格畴参数')
+    lattice = body.get('lattice', 'auto')
+    if lattice not in ('auto', 'hexagonal', 'square'):
+        raise ValidationError('晶格类型应为：auto、hexagonal、square')
+    result = {
+        'lattice': None if lattice == 'auto' else lattice,
+        'shell_count': integer(body.get('shell_count', 1), '识别尺度（壳层数）', 1, 4),
+        'similarity': real(body.get('similarity', 0.85), '取向一致性阈值', 0.5, 0.999),
+        'spacing_tolerance': real(body.get('spacing_tolerance', 0.25), '间距容限', 0.05, 1.0),
+        'minimum_domain_size': integer(body.get('minimum_domain_size', 4), '最小畴颗粒数', 1, 1000),
+        'spacing': None,
+        'order_threshold': None,
+    }
+    if body.get('spacing') is not None:
+        result['spacing'] = real(body['spacing'], '晶格间距（当前长度单位）', 0.000001)
+    if body.get('order_threshold') is not None:
+        result['order_threshold'] = real(body['order_threshold'], '键序阈值', 0.05, 0.98)
+    return result
+
+
 def tags(value):
     items = sequence(value, '标签', 20)
     result = []

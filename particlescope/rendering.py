@@ -226,3 +226,76 @@ def png_bytes(image):
     stream = io.BytesIO()
     image.save(stream, format='PNG')
     return stream.getvalue()
+
+
+def domain_overlay_image(image, rows, report):
+    """在原图上叠加晶格畴着色、畴界、缺陷与无序区标记。
+
+    同一畴的颗粒使用同一填充色，畴界颗粒加亮色描边，点缺陷用菱形、无序
+    颗粒用空心灰圆、边缘颗粒用白色小环区分。渲染只读取畴报告与质心，不
+    回写任何颗粒测量。
+    """
+    base = image.convert('RGBA')
+    overlay = Image.new('RGBA', base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    by_id = {row['id']: row for row in rows}
+    marker = max(5, image.width // 180)
+    line_width = max(1, image.width // 600)
+    domain_colors = {}
+    for domain in report['domains']:
+        domain_colors[domain['domain_id']] = PALETTE[(domain['domain_id'] - 1) % len(PALETTE)]
+    for particle in report['particles']:
+        row = by_id.get(particle['id'])
+        if row is None:
+            continue
+        cx, cy = row['centroid_x'], row['centroid_y']
+        radius = max(4, float(row.get('diameter', marker * 2)) / 2 * 0.9)
+        domain_id = particle['domain_id']
+        if domain_id is not None:
+            color = domain_colors[domain_id]
+            draw.ellipse(
+                (cx - radius, cy - radius, cx + radius, cy + radius),
+                fill=(*color, 150), outline=(*color, 255), width=line_width + 1,
+            )
+            if particle['is_boundary']:
+                draw.ellipse(
+                    (cx - radius - 2, cy - radius - 2, cx + radius + 2, cy + radius + 2),
+                    outline=(255, 255, 255, 255), width=max(2, line_width),
+                )
+        elif particle['is_defect']:
+            half = radius * 0.8
+            draw.polygon(
+                [(cx, cy - half), (cx + half, cy), (cx, cy + half), (cx - half, cy)],
+                fill=(255, 96, 96, 220), outline=(255, 255, 255, 255),
+            )
+        else:
+            draw.ellipse(
+                (cx - radius * 0.7, cy - radius * 0.7, cx + radius * 0.7, cy + radius * 0.7),
+                outline=(150, 150, 150, 230), width=max(1, line_width),
+            )
+        if particle['is_edge']:
+            draw.ellipse(
+                (cx - radius - 4, cy - radius - 4, cx + radius + 4, cy + radius + 4),
+                outline=(255, 255, 255, 180), width=1,
+            )
+    output = Image.alpha_composite(base, overlay)
+    draw = ImageDraw.Draw(output)
+    text_font = font(max(12, image.width // 90))
+    lattice_title = 'hexagonal (psi6)' if report['lattice'] == 'hexagonal' else 'square (psi4)'
+    legend = [
+        ('Filled color: one lattice domain', (73, 220, 185)),
+        ('White ring: domain boundary', (255, 255, 255)),
+        ('Red diamond: point defect', (255, 96, 96)),
+        ('Grey circle: disordered region', (150, 150, 150)),
+        ('Pale ring: edge, missing neighbors', (220, 220, 220)),
+    ]
+    box_width = max(250, image.width // 4)
+    box_height = 30 + len(legend) * 24
+    left = image.width - box_width - 10
+    draw.rectangle((left, 10, left + box_width, 10 + box_height), fill=(10, 20, 28, 215))
+    draw.text((left + 10, 16), 'Lattice domains · ' + lattice_title, font=text_font, fill='white')
+    for index, (text, color) in enumerate(legend):
+        y = 44 + index * 24
+        draw.rectangle((left + 12, y + 4, left + 28, y + 20), fill=(*color, 255))
+        draw.text((left + 36, y + 3), text, font=text_font, fill=(225, 235, 240))
+    return output.convert('RGB')

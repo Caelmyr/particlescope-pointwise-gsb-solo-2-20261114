@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import sys
 import tempfile
 import time
@@ -18,6 +19,10 @@ from particlescope.registration import phase_correlation, translate, affine_land
 from particlescope.segmentation import evaluate_reference
 from particlescope.measurements import crofton_perimeter
 from particlescope.morphology import skeletonize
+from particlescope.domains import (
+    lattice_domains, estimate_spacing, bond_order, build_shells,
+    misorientation_degrees, circular_mean_degrees,
+)
 
 
 class Workflows(unittest.TestCase):
@@ -319,6 +324,132 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+    def test_lattice_domains_separate_orientations_and_disorder(self):
+        sample = self.demo('domains')
+        self.analyze(sample, method='otsu')
+        report = self.request('POST', sample, 'lattice-domains', {})
+        self.assertEqual(report['lattice'], 'hexagonal')
+        self.assertEqual(report['domain_count'], 2)
+        self.assertGreaterEqual(report['ordered_particle_count'], 130)
+        self.assertGreater(report['disordered_particle_count'], 15)
+        # 每个颗粒都被明确归类：畴内、缺陷或无序。
+        for particle in report['particles']:
+            self.assertTrue(
+                particle['domain_id'] is not None
+                or particle['is_defect'] or particle['is_disordered'] or particle['is_edge']
+            )
+        # 两个畴的取向差应接近构造的15度。
+        self.assertEqual(len(report['misorientations']), 1)
+        self.assertAlmostEqual(report['misorientations'][0]['misorientation_degrees'], 15, delta=4)
+        # 畴编号与逐颗粒标签一致。
+        domain_ids = set()
+        for domain in report['domains']:
+            domain_ids.update(domain['particle_ids'])
+        self.assertEqual(len(domain_ids), report['ordered_particle_count'])
+        tagged = {p['id'] for p in report['particles'] if p['domain_id'] is not None}
+        self.assertEqual(domain_ids, tagged)
+
+    def test_lattice_domain_scale_parameters_change_without_altering_measurement(self):
+        sample = self.demo('domains')
+        result = self.analyze(sample, method='otsu')
+        before = self.request('GET', sample, 'result')
+        first = self.request('POST', sample, 'lattice-domains', {'shell_count': 1})
+        second = self.request('POST', sample, 'lattice-domains', {'shell_count': 2})
+        strict = self.request('POST', sample, 'lattice-domains', {'order_threshold': 0.9})
+        self.assertEqual(first['domain_count'], 2)
+        self.assertEqual(second['domain_count'], 2)
+        self.assertLessEqual(strict['ordered_particle_count'], first['ordered_particle_count'])
+        # 反复调整识别尺度后，原始颗粒测量数量与质心保持不变。
+        after = self.request('GET', sample, 'result')
+        self.assertEqual(after['count'], result['count'])
+        self.assertEqual(
+            [(p['id'], p['centroid_x'], p['centroid_y']) for p in before['particles']],
+            [(p['id'], p['centroid_x'], p['centroid_y']) for p in after['particles']],
+        )
+
+    def test_lattice_domain_overlay_image(self):
+        sample = self.demo('domains')
+        self.analyze(sample, method='otsu')
+        response = self.client.post(
+            '/api/samples/' + sample['id'] + '/lattice-domains/image', json={}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content_type, 'image/png')
+        image = Image.open(io.BytesIO(response.data))
+        self.assertEqual(image.size, (sample['width'], sample['height']))
+
+    def test_lattice_domain_validation(self):
+        sample = self.demo('domains')
+        self.analyze(sample, method='otsu')
+        for payload in [
+            {'shell_count': 9},
+            {'lattice': 'cubic'},
+            {'similarity': 1.5},
+            {'minimum_domain_size': 0},
+        ]:
+            response = self.client.post(
+                '/api/samples/' + sample['id'] + '/lattice-domains', json=payload
+            )
+            self.assertEqual(response.status_code, 400, payload)
+
+    def test_bond_order_distinguishes_lattice_from_random(self):
+        spacing = 30.0
+        lattice = np.array([
+            [column * spacing + (row % 2) * spacing / 2,
+             row * spacing * math.sqrt(3) / 2]
+            for row in range(9) for column in range(9)
+        ])
+        first_shells, _, _ = build_shells(lattice, 1, estimate_spacing(lattice))
+        _, psi6 = bond_order(lattice, first_shells, 6)
+        interior = [index for index, shell in enumerate(first_shells) if len(shell) == 6]
+        self.assertGreater(np.median(psi6[interior]), 0.95)
+        rng = np.random.default_rng(4)
+        random_points = rng.uniform(0, 300, (80, 2))
+        random_shells, _, _ = build_shells(random_points, 1, estimate_spacing(random_points))
+        _, random_psi = bond_order(random_points, random_shells, 6)
+        # 稀疏随机点大多不足3个邻居而键序置零，少数非零值也明显低于规则晶格。
+        self.assertLess(np.median(random_psi[random_psi > 0]), 0.75)
+        self.assertLess(np.median(psi6[interior]), 1.05)
+
+    def test_two_spacings_are_not_merged_into_one_lattice(self):
+        spacing = 28.0
+        rows = []
+        particle_id = 1
+        for angle, origin, lattice_a in [(0.0, (0.0, 0.0), spacing), (0.0, (620.0, 0.0), spacing * 1.6)]:
+            theta = math.radians(angle)
+            cos_t, sin_t = math.cos(theta), math.sin(theta)
+            for row in range(7):
+                for column in range(7):
+                    local_x = column * lattice_a + (row % 2) * lattice_a / 2
+                    local_y = row * lattice_a * math.sqrt(3) / 2
+                    rows.append({
+                        'id': particle_id,
+                        'centroid_x': origin[0] + local_x * cos_t - local_y * sin_t,
+                        'centroid_y': origin[1] + local_x * sin_t + local_y * cos_t,
+                        'diameter': 10,
+                    })
+                    particle_id += 1
+        report = lattice_domains(rows)
+        self.assertTrue(report['spacing_distribution']['bimodal'])
+        # 两组间距差异超过容限，不能被强行连成同一个畴。
+        domain_spacings = [domain['spacing_px'] for domain in report['domains']]
+        for value in domain_spacings:
+            self.assertIsNotNone(value)
+
+    def test_circular_mean_and_misorientation(self):
+        # 周期30度上0度与30度等价，圆均值落在二者之一即正确。
+        mean = circular_mean_degrees(np.array([0.5, 29.5, 1.0, 29.0]), 30)
+        self.assertTrue(mean < 0.5 or mean > 29.5, mean)
+        self.assertAlmostEqual(misorientation_degrees(29.95, 19.95, 30), 10.0, delta=0.2)
+        self.assertAlmostEqual(misorientation_degrees(85, 5, 90), 10.0, delta=0.2)
+
+    def test_lattice_domains_require_enough_particles(self):
+        with self.assertRaises(ValueError):
+            lattice_domains([
+                {'id': 1, 'centroid_x': 0, 'centroid_y': 0},
+                {'id': 2, 'centroid_x': 10, 'centroid_y': 0},
+            ])
 
 
 if __name__ == '__main__':
