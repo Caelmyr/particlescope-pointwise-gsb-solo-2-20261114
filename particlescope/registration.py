@@ -192,28 +192,14 @@ def apply_affine(image, transform, output_size):
 
 
 def feather_mosaic(first, second, dx, dy, feather=30):
-    left = math.floor(min(0, dx))
-    top = math.floor(min(0, dy))
-    right = math.ceil(max(first.width, dx + second.width))
-    bottom = math.ceil(max(first.height, dy + second.height))
-    size = (right - left, bottom - top)
-    if size[0] * size[1] > 16000000:
-        raise ValidationError('拼接画布超过1600万像素')
-    a, valid_a = translate(first, -left, -top, size)
-    b, valid_b = translate(second, dx - left, dy - top, size)
-    weight_a = np.minimum(ndi.distance_transform_edt(np.pad(valid_a, 1))[1:-1, 1:-1], feather) * valid_a
-    weight_b = np.minimum(ndi.distance_transform_edt(np.pad(valid_b, 1))[1:-1, 1:-1], feather) * valid_b
-    total = weight_a + weight_b
-    output = np.full((size[1], size[0], 3), 255, dtype=float)
-    active = total > 0
-    numerator = np.asarray(a, dtype=float) * weight_a[:, :, None] + np.asarray(b, dtype=float) * weight_b[:, :, None]
-    output[active] = numerator[active] / total[active, None]
-    return Image.fromarray(np.clip(output, 0, 255).astype(np.uint8)), {
-        'canvas_width': size[0],
-        'canvas_height': size[1],
-        'reference_origin': [-left, -top],
-        'overlap_pixels': int(np.count_nonzero(valid_a & valid_b)),
-        'feather_px': feather,
+    from .mosaic import blend
+    image, info, _, _, _, _ = blend(first, second, dx, dy, feather, method='feather')
+    return image, {
+        'canvas_width': info['canvas_width'],
+        'canvas_height': info['canvas_height'],
+        'reference_origin': info['reference_origin'],
+        'overlap_pixels': info['overlap_pixels'],
+        'feather_px': info['feather_px'],
     }
 
 

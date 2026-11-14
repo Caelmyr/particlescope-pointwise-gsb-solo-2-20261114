@@ -11,20 +11,27 @@ test_filter_preserves_detection_and_history (test_workflows.Workflows.test_filte
 test_geometry_resets_roi_calibration_annotations (test_workflows.Workflows.test_geometry_resets_roi_calibration_annotations) ... ok
 test_input_validation (test_workflows.Workflows.test_input_validation) ... ok
 test_isolated_ground_truth (test_workflows.Workflows.test_isolated_ground_truth) ... ok
+test_legacy_feather_remains_pixel_identical (test_workflows.Workflows.test_legacy_feather_remains_pixel_identical) ... ok
+test_luminance_gain_harmonizes_dimmed_overlap (test_workflows.Workflows.test_luminance_gain_harmonizes_dimmed_overlap) ... ok
 test_manual_edit_preserves_other_split_instances (test_workflows.Workflows.test_manual_edit_preserves_other_split_instances) ... ok
 test_manual_object_removal (test_workflows.Workflows.test_manual_object_removal) ... ok
 test_mosaic_canvas_and_provenance (test_workflows.Workflows.test_mosaic_canvas_and_provenance) ... ok
+test_mosaic_canvas_negative_offset_and_no_overlap (test_workflows.Workflows.test_mosaic_canvas_negative_offset_and_no_overlap) ... ok
+test_mosaic_preview_and_smart_sample_api (test_workflows.Workflows.test_mosaic_preview_and_smart_sample_api) ... ok
+test_mosaic_rejects_invalid_method_and_params (test_workflows.Workflows.test_mosaic_rejects_invalid_method_and_params) ... ok
 test_phase_correlation_recovers_shift (test_workflows.Workflows.test_phase_correlation_recovers_shift) ... ok
 test_preprocessing_invalidates_analysis_and_restore (test_workflows.Workflows.test_preprocessing_invalidates_analysis_and_restore) ... ok
 test_revisions_reject_stale_write (test_workflows.Workflows.test_revisions_reject_stale_write) ... ok
 test_roi_changes_denominator_and_excludes_boundary (test_workflows.Workflows.test_roi_changes_denominator_and_excludes_boundary) ... ok
 test_same_sample_comparison_and_registration (test_workflows.Workflows.test_same_sample_comparison_and_registration) ... ok
 test_skeleton_preserves_thin_structure (test_workflows.Workflows.test_skeleton_preserves_thin_structure) ... ok
+test_smart_mosaic_reduces_ghost_gradient_vs_legacy (test_workflows.Workflows.test_smart_mosaic_reduces_ghost_gradient_vs_legacy) ... ok
+test_smart_seam_avoids_structure_and_keeps_exclusive_regions (test_workflows.Workflows.test_smart_seam_avoids_structure_and_keeps_exclusive_regions) ... ok
 test_spatial_counts_reconcile (test_workflows.Workflows.test_spatial_counts_reconcile) ... ok
 test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_reconcile_counts) ... ok
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 32 tests in 19.591s
 
 OK

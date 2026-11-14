@@ -118,3 +118,4 @@ connection_strings.csv
 !.env.sample
 !.env.template
 __pycache__/
+.pydeps/

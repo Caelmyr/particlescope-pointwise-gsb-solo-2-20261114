@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from particlescope import create_app
 from particlescope.rendering import png_bytes
 from particlescope.synthetic import generate_sample
-from particlescope.registration import phase_correlation, translate, affine_landmarks
+from particlescope.registration import phase_correlation, translate, affine_landmarks, feather_mosaic
+from particlescope.mosaic import blend, build_preview, preview_image
 from particlescope.segmentation import evaluate_reference
 from particlescope.measurements import crofton_perimeter
 from particlescope.morphology import skeletonize
@@ -319,6 +320,149 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+    def particle_pair(self, seed_a=11, seed_b=19, dim=1.0, size=(480, 360)):
+        from PIL import ImageDraw
+
+        def make(seed, scale):
+            rng = np.random.default_rng(seed)
+            image = Image.new('RGB', size, (232, 236, 235))
+            draw = ImageDraw.Draw(image)
+            for _ in range(30):
+                x = int(rng.integers(15, size[0] - 15))
+                y = int(rng.integers(15, size[1] - 15))
+                radius = int(rng.integers(7, 18))
+                color = (rng.integers([30, 40, 50], [80, 95, 110]) * scale).astype(int)
+                draw.ellipse((x - radius, y - radius, x + radius, y + radius),
+                             fill=tuple(int(c) for c in color))
+            return image
+
+        return make(seed_a, 1.0), make(seed_b, dim)
+
+    def test_smart_seam_avoids_structure_and_keeps_exclusive_regions(self):
+        first, second = self.particle_pair()
+        legacy, legacy_info, placed, wa_legacy, wb_legacy, _ = blend(
+            first, second, 260, 0, 30, method='feather',
+        )
+        smart, info, _, wa, wb, detail = blend(first, second, 260, 0, 30, method='smart')
+        self.assertEqual(legacy.size, smart.size)
+        self.assertEqual(info['seam_orientation'], 'vertical')
+        self.assertLess(info['structure_cost_on_seam'], info['structure_cost_overlap_mean'])
+        self.assertGreater(info['seam_points'], 0)
+        # 两侧独有区域两种方法必须逐像素一致，且权重为纯拷贝
+        only_a = placed['valid_a'] & ~placed['valid_b']
+        only_b = placed['valid_b'] & ~placed['valid_a']
+        np.testing.assert_array_equal(np.asarray(legacy)[only_a], np.asarray(smart)[only_a])
+        np.testing.assert_array_equal(np.asarray(legacy)[only_b], np.asarray(smart)[only_b])
+        np.testing.assert_array_equal(wa[only_a], 1.0)
+        np.testing.assert_array_equal(wb[only_b], 1.0)
+        # 重叠区内权重处处为正且互补
+        overlap = placed['overlap']
+        self.assertTrue(np.all((wa + wb)[overlap] > 0))
+        np.testing.assert_allclose((wa + wb)[overlap], 1.0, atol=1e-9)
+        # 接缝完全落在重叠框内
+        x0, y0, x1, y1 = info['bbox']
+        for px, py in info['seam_canvas_points']:
+            self.assertTrue(x0 <= px < x1 and y0 <= py < y1)
+
+    def test_smart_mosaic_reduces_ghost_gradient_vs_legacy(self):
+        first, second = self.particle_pair()
+        legacy, _, placed, wa_l, wb_l, _ = blend(first, second, 260, 0, 30, method='feather')
+        smart, _, _, wa_s, wb_s, _ = blend(first, second, 260, 0, 30, method='smart')
+
+        def band_gradient(image, wa, wb):
+            band = placed['overlap'] & (wa > 0.02) & (wb > 0.02)
+            gray = np.asarray(image, dtype=float).mean(axis=2)
+            gradient = np.hypot(ndi.sobel(gray, 0), ndi.sobel(gray, 1))
+            return float(gradient[band].mean())
+
+        self.assertLess(band_gradient(smart, wa_s, wb_s), band_gradient(legacy, wa_l, wb_l))
+
+    def test_luminance_gain_harmonizes_dimmed_overlap(self):
+        first, second = self.particle_pair()
+        # 同内容整体变暗，模拟两视野曝光差异；错位颗粒不影响背景增益估计
+        dimmed = Image.fromarray((np.asarray(second).astype(float) * 0.75).clip(0, 255).astype(np.uint8))
+        smart, info, _, _, _, _ = blend(first, dimmed, 260, 0, 30, method='smart', harmonize=True)
+        self.assertGreater(info['luminance_gain'], 1.1)
+        self.assertLess(info['luminance_mae_after_gain'], info['luminance_mae_before'])
+        without, raw, _, _, _, _ = blend(first, dimmed, 260, 0, 30, method='smart', harmonize=False)
+        self.assertEqual(raw['luminance_gain'], 1.0)
+
+    def test_mosaic_canvas_negative_offset_and_no_overlap(self):
+        first, second = self.particle_pair(size=(480, 360))
+        negative, neg_info, _, _, _, _ = blend(first, second, -120, -80, 30, method='smart')
+        self.assertEqual(negative.size, (600, 440))
+        self.assertEqual(neg_info['reference_origin'], [120, 80])
+        self.assertEqual(neg_info['overlap_pixels'], 360 * 280)
+        gap, gap_info, _, _, _, detail = blend(first, second, 600, 0, 30, method='smart')
+        self.assertEqual(gap.size, (1080, 360))
+        self.assertEqual(gap_info['overlap_pixels'], 0)
+        self.assertIsNone(detail)
+        # 无重叠时输出等于两图直接拼接，独有区域保持原色
+        gap_array = np.asarray(gap)
+        self.assertTrue(np.all(gap_array[:360, :480] == np.asarray(first)))
+        self.assertTrue(np.all(gap_array[:360, 600:1080] == np.asarray(second)))
+        # 完全包含：画布不大于第一幅图
+        small = first.crop((100, 80, 360, 300))
+        contained, contained_info, _, _, _, _ = blend(first, small, 60, 40, 20, method='smart')
+        self.assertEqual(contained.size, first.size)
+        self.assertEqual(contained_info['overlap_pixels'], 260 * 220)
+        # 横向重叠给出横向接缝
+        _, horizontal, _, _, _, _ = blend(first, second, 0, 200, 30, method='smart')
+        self.assertEqual(horizontal['seam_orientation'], 'horizontal')
+
+    def test_legacy_feather_remains_pixel_identical(self):
+        first, second = self.particle_pair()
+        wrapped, wrapped_info = feather_mosaic(first, second, 260, 0, 30)
+        direct, info, _, _, _, _ = blend(first, second, 260, 0, 30, method='feather')
+        np.testing.assert_array_equal(np.asarray(wrapped), np.asarray(direct))
+        self.assertEqual(wrapped_info['overlap_pixels'], info['overlap_pixels'])
+        self.assertEqual(wrapped_info['canvas_width'], info['canvas_width'])
+
+    def test_mosaic_preview_and_smart_sample_api(self):
+        first, second = self.demo(), self.demo()
+        preview = self.client.post('/api/mosaic/preview', json={
+            'reference': first['id'], 'moving': second['id'], 'dx': 400, 'dy': 0, 'feather': 30,
+        })
+        self.assertEqual(preview.status_code, 200, preview.json)
+        token = preview.json['preview_token']
+        self.assertEqual(set(preview.json['views']), {'legacy', 'smart', 'seam', 'detail'})
+        for view, path in preview.json['views'].items():
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, 'image/png')
+            response.close()
+        bad = self.client.get(f'/api/mosaic/preview/{token}/unknown')
+        self.assertEqual(bad.status_code, 400)
+        smart = self.client.post('/api/mosaic', json={
+            'reference': first['id'], 'moving': second['id'],
+            'dx': 400, 'dy': 0, 'feather': 30, 'method': 'smart',
+        })
+        self.assertEqual(smart.status_code, 200, smart.json)
+        self.assertEqual(smart.json['sample']['width'], 1360)
+        self.assertEqual(smart.json['details']['method'], 'smart')
+        self.assertIn('luminance_gain', smart.json['details'])
+        provenance = self.client.get('/api/samples/' + smart.json['sample']['id']).json['meta']
+        self.assertFalse(provenance['archived'])
+        legacy = self.client.post('/api/mosaic', json={
+            'reference': first['id'], 'moving': second['id'],
+            'dx': 400, 'dy': 0, 'feather': 30, 'method': 'feather',
+        })
+        self.assertEqual(legacy.json['details']['method'], 'feather')
+        self.assertEqual(legacy.json['sample']['width'], 1360)
+
+    def test_mosaic_rejects_invalid_method_and_params(self):
+        first, second = self.demo(), self.demo()
+        response = self.client.post('/api/mosaic', json={
+            'reference': first['id'], 'moving': second['id'],
+            'dx': 400, 'dy': 0, 'method': 'seam_carve',
+        })
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post('/api/mosaic/preview', json={
+            'reference': first['id'], 'moving': second['id'],
+            'dx': 400, 'dy': 0, 'band_scale': 99,
+        })
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == '__main__':

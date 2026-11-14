@@ -652,22 +652,31 @@ def create_api(store, service, recipes, jobs):
 
     @api.post('/mosaic')
     def mosaic():
-        from .registration import feather_mosaic
+        from .mosaic import blend
         data = body()
         first_id = v.identifier(data.get('reference'))
         second_id = v.identifier(data.get('moving'))
         dx = v.real(data.get('dx', 0), '拼接偏移X', -8000, 8000)
         dy = v.real(data.get('dy', 0), '拼接偏移Y', -8000, 8000)
         feather = v.integer(data.get('feather', 30), '羽化宽度', 1, 200)
+        method = v.choice(data.get('method', 'smart'), '拼接方法', ['smart', 'feather'])
+        structure_strength = v.real(data.get('structure_strength', 1.0), '结构避让强度', 0, 10)
+        band_scale = v.real(data.get('band_scale', 1.0), '过渡带宽度系数', 0.1, 5)
+        harmonize = v.boolean(data.get('harmonize', True), '亮度平顺')
         with store.lock:
             first_meta = store.meta(first_id)
             second_meta = store.meta(second_id)
             if first_meta['calibration'] != second_meta['calibration']:
                 raise v.ValidationError('拼接要求两个样本的标定完全一致')
-            image, info = feather_mosaic(store.working_image(first_id), store.working_image(second_id), dx, dy, feather)
-            meta = store.import_image(io.BytesIO(png_bytes(image)), '拼接视野.png')
+            image, info, _, _, _, _ = blend(
+                store.working_image(first_id), store.working_image(second_id),
+                dx, dy, feather, method, structure_strength, band_scale, harmonize,
+            )
+            name = '智能拼接视野.png' if method == 'smart' else '羽化拼接视野.png'
+            meta = store.import_image(io.BytesIO(png_bytes(image)), name)
             store.json_write(store.sample_dir(meta['id']) / 'provenance.json', {
                 'operation': 'mosaic',
+                'method': method,
                 'reference_sample_id': first_id,
                 'moving_sample_id': second_id,
                 'dx': dx,
@@ -676,6 +685,43 @@ def create_api(store, service, recipes, jobs):
             })
             service.set_calibration(meta['id'], first_meta['calibration'])
             return jsonify({'sample': store.meta(meta['id']), 'details': info})
+
+    @api.post('/mosaic/preview')
+    def mosaic_preview():
+        from .mosaic import build_preview
+        data = body()
+        first_id = v.identifier(data.get('reference'))
+        second_id = v.identifier(data.get('moving'))
+        dx = v.real(data.get('dx', 0), '拼接偏移X', -8000, 8000)
+        dy = v.real(data.get('dy', 0), '拼接偏移Y', -8000, 8000)
+        feather = v.integer(data.get('feather', 30), '羽化宽度', 1, 200)
+        structure_strength = v.real(data.get('structure_strength', 1.0), '结构避让强度', 0, 10)
+        band_scale = v.real(data.get('band_scale', 1.0), '过渡带宽度系数', 0.1, 5)
+        with store.lock:
+            first_meta = store.meta(first_id)
+            second_meta = store.meta(second_id)
+            if first_meta['calibration'] != second_meta['calibration']:
+                raise v.ValidationError('拼接要求两个样本的标定完全一致')
+            token, info = build_preview(
+                store.working_image(first_id), store.working_image(second_id),
+                dx, dy, feather, structure_strength, band_scale,
+            )
+        return jsonify({
+            'preview_token': token,
+            'views': {
+                name: f'/api/mosaic/preview/{token}/{name}'
+                for name in ['legacy', 'smart', 'seam', 'detail']
+            },
+            'info': info,
+        })
+
+    @api.get('/mosaic/preview/<token>/<view>')
+    def mosaic_preview_image(token, view):
+        from .mosaic import preview_image
+        if not token.isalnum() or view not in ('legacy', 'smart', 'seam', 'detail'):
+            raise v.ValidationError('预览地址无效')
+        image = preview_image(token, view)
+        return image_response(image)
 
     @api.post('/affine')
     def affine():

@@ -350,16 +350,98 @@ document.querySelectorAll('[data-tool]').forEach(button=>button.onclick=guard(()
 $('compare').onclick=guard(()=>{
   requireSample();const body=openDialog('双样本比较 · 配准 · 拼接');if(state.samples.length<2){body.append(el('p','请先导入至少两个图像样本。','hint'));return}
   const layout=el('div',undefined,'dialog-grid'),controls=el('div'),output=el('div',undefined,'tool-output');const ids=[...state.selected];
-  const fields=[sel('reference','参考样本 A',ids[0]||state.sample.id,sampleOptions()),sel('moving','移动 / 比较样本 B',ids[1]||state.samples.find(s=>s.id!==state.sample.id).id,sampleOptions()),sel('operation','操作','distribution',[['distribution','粒径 / 形态分布对照'],['registration','图像平移配准'],['mosaic','羽化拼接'],['affine','控制点仿射配准']]),sel('field','比较指标','diameter',state.catalog.measurements.map(m=>[m.key,m.label])),sel('mode','平移模式','auto',[['auto','自动估计平移'],['manual','使用手动偏移']]),num('dx','X偏移 px',0,-8000,8000),num('dy','Y偏移 px',0,-8000,8000),{name:'save',label:'配准后另存新样本',type:'checkbox',default:false},arr('source_points','移动图控制点 [[x,y],…]',[[20,20],[200,20],[20,200]]),arr('target_points','参考图控制点 [[x,y],…]',[[20,20],[200,20],[20,200]])];
+  const fields=[sel('reference','参考样本 A',ids[0]||state.sample.id,sampleOptions()),sel('moving','移动 / 比较样本 B',ids[1]||state.samples.find(s=>s.id!==state.sample.id).id,sampleOptions()),sel('operation','操作','distribution',[['distribution','粒径 / 形态分布对照'],['registration','图像平移配准'],['mosaic','视野拼接（智能接缝 / 羽化）'],['affine','控制点仿射配准']]),sel('field','比较指标','diameter',state.catalog.measurements.map(m=>[m.key,m.label])),sel('mode','平移模式','auto',[['auto','自动估计平移'],['manual','使用手动偏移']]),num('dx','X偏移 px',0,-8000,8000),num('dy','Y偏移 px',0,-8000,8000),{name:'save',label:'配准后另存新样本',type:'checkbox',default:false},arr('source_points','移动图控制点 [[x,y],…]',[[20,20],[200,20],[20,200]]),arr('target_points','参考图控制点 [[x,y],…]',[[20,20],[200,20],[20,200]])];
   controls.append(makeForm(fields,'运行对照操作',async data=>{
     if(data.reference===data.moving)throw Error('请选择两个不同的样本');
     output.replaceChildren(el('p','正在计算…'));
+    if(data.operation==='mosaic'){renderMosaicPanel(data,output);return}
     let result;
     await task('正在处理双样本图像…',async()=>{result=data.operation==='distribution'?await post('/api/compare',{first:data.reference,second:data.moving,field:data.field}):await post('/api/'+data.operation,data)});
     output.replaceChildren();renderOutput(result.report||result.transform||result.details||result,output);if(result.sample){await loadLibrary();const button=el('button','打开生成的新样本');button.onclick=guard(async()=>{await selectSample(result.sample.id);$('dialog').close()});output.append(button)}
     status('双样本操作完成');
-  }));layout.append(controls,output);body.append(layout,el('p','自动配准仅估计平移；拼接采用当前偏移且要求标定完全一致。新配准样本需要重新标定。','hint'));
+  }));layout.append(controls,output);body.append(layout,el('p','自动配准仅估计平移；拼接直接采用给定偏移、不重新估计位置，且要求标定完全一致。新配准样本需要重新标定。','hint'));
 });
+function metricCard(label,value){
+  const card=el('div',undefined,'metric-card');card.append(el('small',label),el('strong',fmt(value)));return card;
+}
+async function renderMosaicPanel(data,output){
+  const panel=el('div');
+  const options=el('div',undefined,'mosaic-options');
+  const methodFields=[
+    sel('method','拼接方法','smart',[['smart','智能接缝（绕开结构 + 亮度平顺）'],['feather','原距离羽化（对照基线）']]),
+    num('feather','羽化 / 过渡基准宽度 px',30,1,200),
+    num('structure_strength','结构避让强度',1,0,10),
+    num('band_scale','过渡带宽度系数',1,0.1,5),
+    {name:'harmonize',label:'重叠区亮度平顺（增益校正）',type:'checkbox',default:true},
+  ];
+  const form=makeForm(methodFields,'生成对照预览',async params=>{
+    await task('正在计算接缝与两种拼接预览…',async()=>{
+      const preview=await post('/api/mosaic/preview',{
+        reference:data.reference,moving:data.moving,dx:data.dx,dy:data.dy,
+        feather:params.feather,structure_strength:params.structure_strength,band_scale:params.band_scale,
+      });
+      fillPreview(preview,params);
+    });
+    status('对照预览已生成，可调整参数后重新预览');
+  });
+  options.append(form);
+  const resultBox=el('div',undefined,'mosaic-result');
+  panel.append(options,resultBox);
+  output.replaceChildren(panel);
+  function fillPreview(preview,params){
+    resultBox.replaceChildren();
+    const info=preview.info;
+    const grid=el('div',undefined,'metric-grid');
+    const smart=info.smart,legacy=info.feather;
+    grid.append(
+      metricCard('画布宽 × 高',`${smart.canvas_width} × ${smart.canvas_height}`),
+      metricCard('重叠像素',smart.overlap_pixels),
+      metricCard('接缝方向',smart.has_overlap?smart.seam_orientation:'无重叠'),
+      metricCard('接缝代价 / 重叠均值',smart.has_overlap?`${fmt(smart.structure_cost_on_seam)} / ${fmt(smart.structure_cost_overlap_mean)}`:'—'),
+      metricCard('自适应过渡带 px',smart.has_overlap?fmt(smart.band_width_px):'—'),
+      metricCard('亮度增益 B→A',fmt(smart.luminance_gain)),
+      metricCard('重叠亮度MAE 校正前',fmt(smart.luminance_mae_before)),
+      metricCard('重叠亮度MAE 校正后',fmt(smart.luminance_mae_after_gain)),
+    );
+    resultBox.append(grid);
+    const views=[
+      ['legacy','原羽化结果','legacy'],['smart','智能接缝结果','smart'],
+      ['seam','接缝与过渡带示意图','seam'],['detail','接缝附近细节对照','detail'],
+    ];
+    const imageGrid=el('div',undefined,'mosaic-preview-grid');
+    for(const [view,labelText,key] of views){
+      const card=el('figure',undefined,'mosaic-preview');
+      const img=el('img');img.alt=labelText;img.src=preview.views[view];
+      const caption=el('figcaption',labelText);
+      card.append(img,caption);imageGrid.append(card);
+    }
+    resultBox.append(imageGrid);
+    const saveRow=el('div',undefined,'result-actions');
+    const saveSmart=el('button','另存智能拼接为新样本','primary');
+    saveSmart.onclick=guard(async()=>{
+      const result=await task('正在保存智能拼接样本…',()=>post('/api/mosaic',{
+        reference:data.reference,moving:data.moving,dx:data.dx,dy:data.dy,
+        feather:params.feather,method:'smart',structure_strength:params.structure_strength,
+        band_scale:params.band_scale,harmonize:params.harmonize,
+      }));
+      await loadLibrary();status('已另存新样本：'+result.sample.name);
+      const done=el('p',`已生成新样本（${result.sample.width} × ${result.sample.height}），原样本保持不变。`,'hint');
+      const open=el('button','打开生成的新样本');
+      open.onclick=guard(async()=>{await selectSample(result.sample.id);$('dialog').close()});
+      saveRow.replaceChildren(done,open);
+    });
+    const saveLegacy=el('button','另存原羽化拼接为新样本');
+    saveLegacy.onclick=guard(async()=>{
+      const result=await task('正在保存羽化拼接样本…',()=>post('/api/mosaic',{
+        reference:data.reference,moving:data.moving,dx:data.dx,dy:data.dy,
+        feather:params.feather,method:'feather',
+      }));
+      await loadLibrary();status('已另存羽化对照样本：'+result.sample.name);
+    });
+    saveRow.append(saveSmart,saveLegacy);
+    resultBox.append(saveRow,el('p','智能接缝在重叠区内沿低结构、低分歧路径行走；两侧独有区域直接拷贝，负偏移与无重叠时画布范围与原羽化一致。','muted'));
+  }
+}
 $('batch').onclick=guard(openBatch);
 async function openBatch(){
   state.recipes=await request('/api/recipes');const body=openDialog('批量分析与配方');const layout=el('div',undefined,'dialog-grid'),controls=el('div'),output=el('div',undefined,'tool-output');
