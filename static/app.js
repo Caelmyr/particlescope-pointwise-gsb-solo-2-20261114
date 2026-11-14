@@ -263,9 +263,89 @@ $('filterMeasurements').onclick=guard(()=>{
 $('saveRecipe').onclick=guard(()=>{requireResult();const body=openDialog('保存分析配方');body.append(makeForm([txt('name','配方名称','我的颗粒分析配方'),txt('description','适用样本说明','','textarea')],'保存配方',async data=>{await post(`/api/recipes/from-sample/${state.sample.id}`,data);state.recipes=await request('/api/recipes');$('dialog').close();status('当前分割与测量筛选已保存为配方')}))});
 $('referenceFile').onchange=guard(async e=>{requireSample();const file=e.target.files[0];e.target.value='';if(!file)return;const form=new FormData();form.append('file',file);await task('导入参考掩膜…',()=>request(url('reference'),{method:'POST',body:form}));status('参考掩膜已保存，可以运行参考评估')});
 $('export').onclick=guard(()=>{
-  requireResult();const body=openDialog('导出与分析报告');const grid=el('div',undefined,'link-grid');
-  for(const [kind,title] of [['contours-svg','颗粒轮廓 SVG'],['csv','颗粒测量 CSV'],['json','完整分析 JSON'],['geojson','质心 GeoJSON'],['mask-tiff','二值掩膜 TIFF'],['labels-tiff','实例标签 TIFF'],['bundle','完整分析 ZIP'],['crops','透明颗粒裁片 ZIP'],['annotations','人工测量 CSV'],['chart','粒径分布图 PNG']]){const a=el('a','↓ '+title);a.href=url('export/'+kind);grid.append(a)}
+  requireResult();
+  const body=openDialog('导出与分析报告');
+  const svgPanel=el('div',undefined,'svg-export');
+  svgPanel.append(el('h3','颗粒轮廓 SVG（支持简化预览）'));
+  svgPanel.append(el('p','在共享边界上只做一次简化并由相邻颗粒共用同一条折线，孔洞以 even-odd 保留，分离颗粒不会相交；每个简化多边形都按原标签栅格重新校验，不满足约束的颗粒自动降低偏差或保留原始轮廓。坐标仍为图像像素，不缩放、不位图化。','hint'));
+  const sliderRow=el('label');
+  const tolOut=el('output','1');tolOut.id='svgTolValue';
+  sliderRow.append('允许轮廓偏差（px） ',tolOut);
+  const slider=el('input');slider.type='range';slider.min=0;slider.max=10;slider.step=0.25;slider.value=1;slider.id='svgTolerance';
+  sliderRow.append(slider);svgPanel.append(sliderRow);
+  const layerRow=el('div',undefined,'inline');
+  const mode=el('select');
+  for(const [value,text] of [['overlay','原始+简化叠加'],['simplified','仅简化轮廓'],['original','仅原始轮廓']])mode.append(new Option(text,value));
+  layerRow.append(el('label','预览图层'),mode);
+  const labelCheck=el('input');labelCheck.type='checkbox';labelCheck.checked=true;
+  const labelWrap=el('label',undefined,'check');labelWrap.append(labelCheck,'颗粒编号');
+  layerRow.append(labelWrap);svgPanel.append(layerRow);
+  const stats=el('div',undefined,'metric-grid');
+  const previewBox=el('div',undefined,'svg-preview');
+  svgPanel.append(stats,previewBox);
+  const repairNote=el('p','','hint');repairNote.hidden=true;svgPanel.append(repairNote);
+  const buttons=el('div',undefined,'inline');
+  const downloadSimple=el('a',undefined,'primary');downloadSimple.textContent='↓ 下载简化 SVG';downloadSimple.download='contours-simplified.svg';
+  const downloadRaw=el('a','↓ 下载未简化 SVG（原始逐像素轮廓）');downloadRaw.href=url('export/contours-svg');downloadRaw.download='contours.svg';
+  buttons.append(downloadSimple,downloadRaw);svgPanel.append(buttons);
+  body.append(svgPanel);
+  const grid=el('div',undefined,'link-grid');
+  for(const [kind,title] of [['csv','颗粒测量 CSV'],['json','完整分析 JSON'],['geojson','质心 GeoJSON'],['mask-tiff','二值掩膜 TIFF'],['labels-tiff','实例标签 TIFF'],['bundle','完整分析 ZIP'],['crops','透明颗粒裁片 ZIP'],['annotations','人工测量 CSV'],['chart','粒径分布图 PNG']]){const a=el('a','↓ '+title);a.href=url('export/'+kind);grid.append(a)}
   const report=el('a','打开可打印报告 / 另存PDF');report.href=url('report');report.target='_blank';report.rel='noopener';grid.append(report);body.append(grid,el('p','报告内含标定、分割参数、叠加图、粒径分布和测量说明。','hint'));
+  let reportData=null,previewTimer=null,previewToken=0;
+  const centroidById=new Map(state.result.particles.map(p=>[p.id,[p.centroid_x,p.centroid_y]]));
+  function metric(labelText,value){const card=el('div',undefined,'metric-card');card.append(el('small',labelText),el('strong',value));return card}
+  function renderPreview(){
+    stats.replaceChildren();
+    if(!reportData)return;
+    stats.append(
+      metric('原始路径节点',reportData.nodes_original.toLocaleString()),
+      metric('简化后节点',reportData.nodes_simplified.toLocaleString()),
+      metric('节点减少',reportData.reduction_percent+'%'),
+      metric('共享边界段',reportData.shared_segments),
+      metric('含孔洞颗粒',reportData.particles_with_holes),
+      metric('实际应用偏差',reportData.tolerance_applied+' px')
+    );
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.setAttribute('viewBox',`0 0 ${reportData.width} ${reportData.height}`);
+    svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+    const showOriginal=mode.value!=='simplified',showSimple=mode.value!=='original';
+    if(showOriginal){
+      const g=document.createElementNS('http://www.w3.org/2000/svg','g');g.setAttribute('class','raw-layer');
+      for(const item of reportData.original_paths){const p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',item.d);g.append(p)}
+      svg.append(g);
+    }
+    if(showSimple){
+      const g=document.createElementNS('http://www.w3.org/2000/svg','g');g.setAttribute('class','simple-layer');
+      for(const item of reportData.simplified_paths){const p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',item.d);p.setAttribute('stroke',item.color);g.append(p)}
+      if(labelCheck.checked){
+        const lg=document.createElementNS('http://www.w3.org/2000/svg','g');lg.setAttribute('class','preview-labels');
+        for(const item of reportData.simplified_paths){const c=centroidById.get(item.id);if(!c)continue;const t=document.createElementNS('http://www.w3.org/2000/svg','text');t.setAttribute('x',c[0]);t.setAttribute('y',c[1]);t.textContent=String(item.id);lg.append(t)}
+        svg.append(lg);
+      }
+      svg.append(g);
+    }
+    previewBox.replaceChildren(svg);
+    repairNote.hidden=!reportData.repaired_ids.length&&!reportData.truncated_geometry;
+    const notes=[];
+    if(reportData.repaired_ids.length)notes.push(`颗粒 ${reportData.repaired_ids.slice(0,20).join('、')}${reportData.repaired_ids.length>20?' 等':''} 在该偏差下无法通过拓扑校验，已保留原始轮廓`);
+    if(reportData.truncated_geometry)notes.push(`预览仅绘制前 ${reportData.preview_particles} 个颗粒的几何，下载的 SVG 包含全部颗粒`);
+    repairNote.textContent=notes.join('；');
+    downloadSimple.href=url(`export/contours-svg-simplified?tolerance=${encodeURIComponent(slider.value)}`);
+  }
+  async function loadPreview(){
+    const token=++previewToken;
+    status('正在生成轮廓简化预览…');
+    try{
+      const data=await request(url(`contour-preview?tolerance=${encodeURIComponent(slider.value)}`));
+      if(token!==previewToken)return;
+      reportData=data;renderPreview();status('轮廓简化预览已更新');
+    }catch(error){if(token===previewToken)status(error.message,true);throw error}
+  }
+  function schedulePreview(){clearTimeout(previewTimer);previewTimer=setTimeout(guard(loadPreview),220)}
+  slider.oninput=()=>{tolOut.textContent=slider.value;schedulePreview()};
+  mode.onchange=renderPreview;labelCheck.onchange=renderPreview;
+  guard(loadPreview)();
 });
 function showParticle(row){
   const body=openDialog('颗粒 #'+row.id);const image=el('img',undefined,'preview');image.src=url(`particle/${row.id}`);body.append(image);renderOutput(row,body);const button=el('button',row.included?'从统计中排除此颗粒':'重新纳入此颗粒');button.onclick=guard(async()=>{const excluded=new Set(state.result.measurement_filters?.exclude_ids||[]);row.included?excluded.add(row.id):excluded.delete(row.id);await mutate('更新颗粒筛选…',()=>post(url('filter'),{...state.result.measurement_filters,exclude_ids:[...excluded],revision:state.sample.revision}));$('dialog').close()});body.append(button);

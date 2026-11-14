@@ -500,6 +500,15 @@ def create_api(store, service, recipes, jobs):
         with store.lock:
             return image_response(checkerboard(store.original_image(key), store.working_image(key)))
 
+    @api.get('/samples/<key>/contour-preview')
+    def contour_preview(key):
+        from .vectorize import preview_report, validate_tolerance
+        tolerance = validate_tolerance(request.args.get('tolerance', 1))
+        with store.lock:
+            result = service.require_result(key)
+            report = preview_report(service.labels(key), included_rows(result), tolerance)
+            return jsonify(report)
+
     @api.get('/samples/<key>/export/<kind>')
     def export(key, kind):
         with store.lock:
@@ -507,6 +516,12 @@ def create_api(store, service, recipes, jobs):
             if kind == 'contours-svg':
                 from .exports import contour_svg
                 return binary_response(contour_svg(service.labels(key), result), 'contours.svg', 'image/svg+xml')
+            if kind == 'contours-svg-simplified':
+                from .vectorize import contour_svg_string, validate_tolerance
+                tolerance = validate_tolerance(request.args.get('tolerance', 1))
+                labels = service.labels(key)
+                data = contour_svg_string(labels, included_rows(result), tolerance).encode('utf-8')
+                return binary_response(data, 'contours-simplified.svg', 'image/svg+xml')
             if kind == 'csv':
                 return binary_response(particle_csv(result), 'particles.csv', 'text/csv')
             if kind == 'json':
