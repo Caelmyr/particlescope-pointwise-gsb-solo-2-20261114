@@ -13,6 +13,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from particlescope import create_app
 from particlescope.rendering import png_bytes
+from particlescope.spatial import cluster_particles
 from particlescope.synthetic import generate_sample
 from particlescope.registration import phase_correlation, translate, affine_landmarks
 from particlescope.segmentation import evaluate_reference
@@ -319,6 +320,75 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+
+class Clustering(unittest.TestCase):
+    @staticmethod
+    def rows_from(points):
+        return [{'id': i, 'centroid_x': float(x), 'centroid_y': float(y), 'diameter': 1.0}
+                for i, (x, y) in enumerate(points)]
+
+    @staticmethod
+    def reference_labels(points, radius, min_points):
+        """按既定规则逐点BFS的参照实现，用稠密距离矩阵独立计算邻域。"""
+        n = len(points)
+        dist = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=-1)
+        neighbors = [np.flatnonzero(row <= radius) for row in dist]
+        core = np.array([len(item) for item in neighbors]) >= min_points
+        labels = np.full(n, -1, dtype=int)
+        visited = np.zeros(n, dtype=bool)
+        cluster = 0
+        for index in range(n):
+            if visited[index]:
+                continue
+            visited[index] = True
+            if not core[index]:
+                continue
+            labels[index] = cluster
+            queue = [index]
+            for center in queue:
+                for neighbor in neighbors[center]:
+                    if labels[neighbor] == -1:
+                        labels[neighbor] = cluster
+                    if visited[neighbor]:
+                        continue
+                    visited[neighbor] = True
+                    if core[neighbor]:
+                        queue.append(neighbor)
+            cluster += 1
+        return labels
+
+    @staticmethod
+    def labels_of(result, n):
+        labels = np.full(n, -1, dtype=int)
+        for cluster in result['clusters']:
+            for pid in cluster['ids']:
+                labels[pid] = cluster['id'] - 1
+        return labels
+
+    def test_core_border_noise_match_reference(self):
+        rng = np.random.default_rng(20261114)
+        for trial, (radius, min_points) in enumerate([(15, 2), (40, 4), (90, 7), (40, 2), (90, 4), (15, 7)]):
+            points = rng.uniform(0, 400, (300, 2))
+            result = cluster_particles(self.rows_from(points), 1, radius, min_points)
+            expected = self.reference_labels(points, radius, min_points)
+            actual = self.labels_of(result, len(points))
+            self.assertTrue((actual == expected).all(), f'第{trial}组标签不一致')
+            self.assertEqual(sorted(np.flatnonzero(expected < 0).tolist()), sorted(result['noise_ids']))
+
+    def test_dense_field_completes_reproducibly(self):
+        rng = np.random.default_rng(7)
+        points = rng.uniform(0, 2000, (20000, 2))
+        rows = self.rows_from(points)
+        first = cluster_particles(rows, 1, 400, 5)
+        second = cluster_particles(rows, 1, 400, 5)
+        self.assertEqual(first, second)
+        total = sum(c['count'] for c in first['clusters']) + len(first['noise_ids'])
+        self.assertEqual(total, len(rows))
+        member_ids = [pid for c in first['clusters'] for pid in c['ids']] + first['noise_ids']
+        self.assertEqual(sorted(member_ids), list(range(len(rows))))
+        self.assertEqual([c['id'] for c in first['clusters']],
+                         list(range(1, first['cluster_count'] + 1)))
 
 
 if __name__ == '__main__':
