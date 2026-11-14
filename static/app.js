@@ -351,15 +351,70 @@ $('compare').onclick=guard(()=>{
   requireSample();const body=openDialog('双样本比较 · 配准 · 拼接');if(state.samples.length<2){body.append(el('p','请先导入至少两个图像样本。','hint'));return}
   const layout=el('div',undefined,'dialog-grid'),controls=el('div'),output=el('div',undefined,'tool-output');const ids=[...state.selected];
   const fields=[sel('reference','参考样本 A',ids[0]||state.sample.id,sampleOptions()),sel('moving','移动 / 比较样本 B',ids[1]||state.samples.find(s=>s.id!==state.sample.id).id,sampleOptions()),sel('operation','操作','distribution',[['distribution','粒径 / 形态分布对照'],['registration','图像平移配准'],['mosaic','羽化拼接'],['affine','控制点仿射配准']]),sel('field','比较指标','diameter',state.catalog.measurements.map(m=>[m.key,m.label])),sel('mode','平移模式','auto',[['auto','自动估计平移'],['manual','使用手动偏移']]),num('dx','X偏移 px',0,-8000,8000),num('dy','Y偏移 px',0,-8000,8000),{name:'save',label:'配准后另存新样本',type:'checkbox',default:false},arr('source_points','移动图控制点 [[x,y],…]',[[20,20],[200,20],[20,200]]),arr('target_points','参考图控制点 [[x,y],…]',[[20,20],[200,20],[20,200]])];
-  controls.append(makeForm(fields,'运行对照操作',async data=>{
+  const form=makeForm(fields,'运行对照操作',async data=>{
     if(data.reference===data.moving)throw Error('请选择两个不同的样本');
     output.replaceChildren(el('p','正在计算…'));
     let result;
     await task('正在处理双样本图像…',async()=>{result=data.operation==='distribution'?await post('/api/compare',{first:data.reference,second:data.moving,field:data.field}):await post('/api/'+data.operation,data)});
-    output.replaceChildren();renderOutput(result.report||result.transform||result.details||result,output);if(result.sample){await loadLibrary();const button=el('button','打开生成的新样本');button.onclick=guard(async()=>{await selectSample(result.sample.id);$('dialog').close()});output.append(button)}
+    output.replaceChildren();
+    if(data.operation==='registration'){renderRegistration(result,output,data,form)}
+    else{renderOutput(result.report||result.transform||result.details||result,output);if(result.sample){await loadLibrary();const button=el('button','打开生成的新样本');button.onclick=guard(async()=>{await selectSample(result.sample.id);$('dialog').close()});output.append(button)}}
     status('双样本操作完成');
-  }));layout.append(controls,output);body.append(layout,el('p','自动配准仅估计平移；拼接采用当前偏移且要求标定完全一致。新配准样本需要重新标定。','hint'));
+  });
+  controls.append(form);layout.append(controls,output);body.append(layout,el('p','自动配准仅估计平移；周期排列结构可能存在多个等价偏移，证据不足或重叠过小时不能另存。拼接要求标定完全一致，新配准样本需要重新标定。','hint'));
 });
+const assessmentText={reliable:'配准可靠：仅存在一个强匹配位移',ambiguous:'配准有歧义：多个位移证据接近（可能错开整排微球），请人工选择后再另存',insufficient:'证据不足：没有满足最小重叠与最低相关的位移，不能另存',manual:'手动偏移：已按真实重叠区复核，请自行确认'};
+function renderRegistration(result,target,data,form){
+  const report=result.report||result;
+  const assessment=report.assessment;
+  const bannerClass=assessment.status==='manual'&&assessment.weak_match?'reg-banner ambiguous':'reg-banner '+assessment.status;
+  const banner=el('div',undefined,bannerClass);
+  banner.append(el('strong',assessment.weak_match?'手动偏移匹配偏弱':(assessmentText[assessment.status]||assessment.status)),el('p',assessment.message||''));
+  target.append(banner);
+  const overlap=report.overlap||{};
+  const ov=el('div',undefined,'metric-grid');
+  ov.append(metricCard('真实重叠 %',overlap.geometric_overlap_percent),metricCard('无数据填充 %',overlap.no_data_fill_percent),metricCard('最低重叠要求 %',overlap.minimum_required_percent),metricCard('空间域相关 NCC',assessment.selected?assessment.selected.spatial_ncc:null));
+  target.append(ov);
+  if(assessment.status==='insufficient'){
+    target.append(el('p','所有相似度只在白色填充被误算时才会偏高；本结果已按真实重叠区评估，拒绝把该位移当作配准成功。请调整视野重叠，或改用控制点仿射配准。','hint'));
+  }
+  if(Array.isArray(assessment.candidates)&&assessment.candidates.length){
+    target.append(el('h3','候选平移（按真实重叠区内相关系数排序）'));
+    const wrap=el('div',undefined,'table-wrap'),table=el('table'),thead=el('tr');
+    ['','X偏移','Y偏移','空间域NCC','几何重叠%','相位相关峰'].forEach(t=>thead.append(el('th',t)));
+    table.append(thead);const tbody=el('tbody');
+    const viable=assessment.candidates.filter(c=>c.spatial_ncc!==null).slice().sort((a,b)=>b.spatial_ncc-a.spatial_ncc);
+    const shown=viable.length?viable:assessment.candidates;
+    shown.slice(0,8).forEach((cand,index)=>{
+      const row=el('tr');const radio=el('input');radio.type='radio';radio.name='reg-candidate';radio.value=JSON.stringify({dx:cand.dx,dy:cand.dy});
+      const isSelected=assessment.selected&&cand.dx===assessment.selected.dx&&cand.dy===assessment.selected.dy;
+      if(isSelected||(!assessment.selected&&index===0))radio.checked=true;
+      const cell=el('td');cell.append(radio);
+      row.append(cell,el('td',fmt(cand.dx)),el('td',fmt(cand.dy)),el('td',fmt(cand.spatial_ncc)),el('td',fmt(cand.geometric_overlap_percent)),el('td',fmt(cand.correlation_peak)));
+      tbody.append(row);
+    });
+    table.append(tbody);wrap.append(table);target.append(wrap);
+    const apply=el('button','把所选偏移填入手动模式并重新计算');
+    apply.onclick=guard(()=>{
+      const picked=target.querySelector('input[name="reg-candidate"]:checked');
+      if(!picked)throw Error('请先选择一个候选偏移');
+      const offset=JSON.parse(picked.value);
+      const modeInput=form.querySelector('[name="mode"]'),dxInput=form.querySelector('[name="dx"]'),dyInput=form.querySelector('[name="dy"]');
+      modeInput.value='manual';dxInput.value=offset.dx;dyInput.value=offset.dy;
+      form.requestSubmit();
+    });
+    target.append(apply);
+    if(assessment.status==='ambiguous')target.append(el('p','提示：这些候选在真实重叠区内几乎同样吻合，相位相关峰最高不等于位移唯一。请对照两幅原图的微球排列，选择物理上正确的那一个，再用手动模式另存。','hint'));
+  }
+  const details=el('details',undefined,'output-section');details.open=true;details.append(el('summary','相似度与变换明细'));
+  renderOutput({transform:report.transform,before:report.before,after:report.after},details);target.append(details);
+  if(result.sample){loadLibrary().then(()=>{const button=el('button','打开生成的新样本');button.onclick=guard(async()=>{await selectSample(result.sample.id);$('dialog').close()});target.append(button)})}
+  if(assessment.status!=='reliable'&&assessment.status!=='manual'){
+    target.append(el('p','当前结论为「'+(assessmentText[assessment.status]||assessment.status)+'」，后端已拒绝直接另存新样本。','hint'));
+  }
+}
+function metricCard(labelText,value){const card=el('div',undefined,'metric-card');card.append(el('small',labelText),el('strong',fmt(value)));return card}
+
 $('batch').onclick=guard(openBatch);
 async function openBatch(){
   state.recipes=await request('/api/recipes');const body=openDialog('批量分析与配方');const layout=el('div',undefined,'dialog-grid'),controls=el('div'),output=el('div',undefined,'tool-output');

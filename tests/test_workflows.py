@@ -8,16 +8,34 @@ import zipfile
 from pathlib import Path
 import numpy as np
 from scipy import ndimage as ndi
-from PIL import Image
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from particlescope import create_app
 from particlescope.rendering import png_bytes
 from particlescope.synthetic import generate_sample
-from particlescope.registration import phase_correlation, translate, affine_landmarks
+from particlescope.registration import (
+    phase_correlation, translate, affine_landmarks, assess_registration,
+    correlation_candidates, period_vectors, spatial_verification,
+    no_data_overlay, overlap_fraction,
+)
 from particlescope.segmentation import evaluate_reference
 from particlescope.measurements import crofton_perimeter
 from particlescope.morphology import skeletonize
+
+
+def periodic_lattice(width=1400, height=1000, spacing=80, jitter=0.5, radius=14, seed=2):
+    """生成带轻微位置抖动的周期排列微球大视野，用于模拟两张显微镜照片。"""
+    rng = np.random.default_rng(seed)
+    image = Image.new('L', (width, height), 235)
+    draw = ImageDraw.Draw(image)
+    for row in range(height // spacing + 2):
+        for column in range(width // spacing + 2):
+            x = spacing // 2 + column * spacing + rng.normal(0, jitter)
+            y = spacing // 2 + row * spacing + rng.normal(0, jitter)
+            r = radius + int(rng.integers(-1, 2))
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=60)
+    return image.convert('RGB')
 
 
 class Workflows(unittest.TestCase):
@@ -296,6 +314,143 @@ class Workflows(unittest.TestCase):
         transform = phase_correlation(image, moved)
         self.assertAlmostEqual(transform['dx'], -12, delta=0.3)
         self.assertAlmostEqual(transform['dy'], 7, delta=0.3)
+
+    def upload_image(self, image, name):
+        response = self.client.post(
+            '/api/samples',
+            data={'file': (io.BytesIO(png_bytes(image)), name)},
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(response.status_code, 201, response.json)
+        return response.json['imported'][0]
+
+    def test_periodic_lattice_flags_ambiguous_offsets(self):
+        # 两张同视野的周期微球照片错开一个完整晶格周期，存在多个近乎等价的偏移
+        fov = 480
+        origin_x, origin_y = 200, 150
+        field = periodic_lattice(jitter=0.5)
+        reference = field.crop((origin_x, origin_y, origin_x + fov, origin_y + fov))
+        moving = field.crop((origin_x + 80, origin_y, origin_x + 80 + fov, origin_y + fov))
+        result = assess_registration(reference, moving)
+        self.assertEqual(result['status'], 'ambiguous')
+        self.assertGreaterEqual(len(result.get('alternatives', [])), 1)
+        # 最优候选与备选候选都应是强匹配，差距小于歧义阈值
+        best = result['selected']
+        self.assertGreaterEqual(best['spatial_ncc'], 0.80)
+        for alternative in result['alternatives']:
+            self.assertGreaterEqual(alternative['geometric_overlap_percent'], 15.0)
+            self.assertGreaterEqual(alternative['spatial_ncc'], best['spatial_ncc'] - 0.10)
+        # 自相关必须还原出 80px 的晶格周期向量
+        vectors = period_vectors(reference)
+        self.assertTrue(any(abs(dx) == 80 and dy == 0 for dx, dy, _ in vectors)
+                        or any(dx == 0 and abs(dy) == 80 for dx, dy, _ in vectors))
+
+    def test_perfectly_periodic_lattice_is_ambiguous_not_reliable(self):
+        # 完全规则的晶格相位相关面会被压平，靠自相关周期向量补候选后仍应判歧义
+        fov = 480
+        field = periodic_lattice(jitter=0.0)
+        reference = field.crop((200, 150, 200 + fov, 150 + fov))
+        moving = field.crop((280, 150, 280 + fov, 150 + fov))
+        result = assess_registration(reference, moving)
+        self.assertEqual(result['status'], 'ambiguous')
+        ncc_values = [c['spatial_ncc'] for c in result['candidates'] if c['spatial_ncc'] is not None]
+        # 至少两个候选达到强匹配
+        self.assertGreaterEqual(sum(v >= 0.80 for v in ncc_values), 2)
+
+    def test_normal_translation_stays_reliable(self):
+        # 普通（非周期）图像的平移配准必须继续给出唯一可靠结论
+        image, _, _ = generate_sample('isolated')
+        moved, _ = translate(image, 12, -7)
+        result = assess_registration(image, moved)
+        self.assertEqual(result['status'], 'reliable')
+        self.assertAlmostEqual(result['selected']['dx'], -12, delta=0.5)
+        self.assertAlmostEqual(result['selected']['dy'], 7, delta=0.5)
+        self.assertGreaterEqual(result['selected']['spatial_ncc'], 0.90)
+        # 同一图像视为唯一匹配
+        self.assertEqual(assess_registration(image, image.copy())['status'], 'reliable')
+
+    def test_no_overlap_is_insufficient_and_cannot_be_saved(self):
+        image, _, _ = generate_sample('isolated')
+        # 平移到几乎完全错开：真实重叠低于 15%
+        moved, _ = translate(image, image.width - 40, 0)
+        result = assess_registration(image, moved)
+        self.assertEqual(result['status'], 'insufficient')
+        self.assertLess(overlap_fraction(image.size, image.width - 40, 0) * 100, 15.0)
+        # 空间域复核在极小重叠时直接给 None，白色填充不参与评分
+        ncc, fraction = spatial_verification(image, moved, image.width - 40, 0)
+        self.assertIsNone(ncc)
+        # API 层拒绝把无重叠结果另存
+        reference_sample = self.upload_image(image, 'no-overlap-a.png')
+        moving_sample = self.upload_image(moved, 'no-overlap-b.png')
+        response = self.client.post('/api/registration', json={
+            'reference': reference_sample['id'], 'moving': moving_sample['id'], 'save': True,
+        })
+        self.assertEqual(response.status_code, 400)
+        # 手动指定无重叠偏移同样被拒绝
+        response = self.client.post('/api/registration', json={
+            'reference': reference_sample['id'], 'moving': moving_sample['id'],
+            'mode': 'manual', 'dx': image.width - 40, 'dy': 0, 'save': True,
+        })
+        self.assertEqual(response.status_code, 400)
+
+    def test_ambiguous_auto_save_rejected_but_manual_choice_allowed(self):
+        fov = 480
+        field = periodic_lattice(jitter=0.5)
+        reference = field.crop((200, 150, 200 + fov, 150 + fov))
+        moving = field.crop((280, 150, 280 + fov, 150 + fov))
+        reference_sample = self.upload_image(reference, 'ambig-a.png')
+        moving_sample = self.upload_image(moving, 'ambig-b.png')
+        # 自动模式 + 另存必须被后端拒绝
+        blocked = self.client.post('/api/registration', json={
+            'reference': reference_sample['id'], 'moving': moving_sample['id'], 'save': True,
+        })
+        self.assertEqual(blocked.status_code, 400)
+        # 先试算拿到候选，再用手动模式选择最优候选另存
+        preview = self.client.post('/api/registration', json={
+            'reference': reference_sample['id'], 'moving': moving_sample['id'],
+        })
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json['assessment']['status'], 'ambiguous')
+        chosen = preview.json['assessment']['selected']
+        saved = self.client.post('/api/registration', json={
+            'reference': reference_sample['id'], 'moving': moving_sample['id'],
+            'mode': 'manual', 'dx': chosen['dx'], 'dy': chosen['dy'], 'save': True,
+        })
+        self.assertEqual(saved.status_code, 200, saved.json)
+        saved.close()
+        # 另存图像的无数据区不再是纯白伪装
+        working_response = self.client.get(
+            '/api/samples/' + saved.json['sample']['id'] + '/image/working'
+        )
+        working = working_response.data
+        working_response.close()
+        with Image.open(io.BytesIO(working)) as decoded:
+            pixels = np.asarray(decoded.convert('RGB')).reshape(-1, 3)
+        pure_white = int((pixels == 255).all(axis=1).sum())
+        self.assertLess(pure_white / len(pixels), 0.02)
+
+    def test_no_data_overlay_only_changes_fill_zone(self):
+        image, _, _ = generate_sample('isolated')
+        aligned, valid = translate(image, 60, 0, image.size)
+        marked = no_data_overlay(aligned, valid)
+        original = np.asarray(aligned)
+        result = np.asarray(marked)
+        # 真实数据像素保持不变
+        np.testing.assert_array_equal(result[valid], original[valid])
+        # 无数据区不存在纯白像素
+        self.assertEqual(int((result[~valid] == 255).all(axis=1).sum()), 0)
+
+    def test_correlation_candidates_returns_multiple_peaks(self):
+        fov = 480
+        field = periodic_lattice(jitter=1.0)
+        reference = field.crop((200, 150, 200 + fov, 150 + fov))
+        moving = field.crop((280, 150, 280 + fov, 150 + fov))
+        candidates = correlation_candidates(reference, moving)
+        self.assertGreaterEqual(len(candidates), 2)
+        for candidate in candidates:
+            self.assertIn('dx', candidate)
+            self.assertIn('dy', candidate)
+            self.assertIn('correlation_peak', candidate)
 
     def test_mosaic_canvas_and_provenance(self):
         first, second = self.demo(), self.demo()
