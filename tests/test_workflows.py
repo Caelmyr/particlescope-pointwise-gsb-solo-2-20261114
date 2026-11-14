@@ -320,6 +320,215 @@ class Workflows(unittest.TestCase):
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
 
+    def test_intercepts_basic_geometry_and_segments(self):
+        sample = self.demo()
+        result = self.analyze(sample)
+        report = self.request('POST', sample, 'intercepts', {
+            'angle': 0, 'spacing': 40, 'offset': 0, 'sample_step': 0.5,
+            'analysis_id': result['id'],
+        })
+        self.assertEqual(report['analysis_id'], result['id'])
+        self.assertGreater(report['line_count'], 0)
+        self.assertGreater(report['summary']['particle']['count'], 0)
+        self.assertEqual(report['summary']['particle']['count'], report['length_distribution']['n'])
+        self.assertAlmostEqual(
+            sum(report['length_distribution']['percent']), 100, places=4
+        )
+        complete = [
+            row for row in report['intercepts']
+            if row['phase'] == 'particle' and row['complete']
+        ]
+        self.assertEqual(len(complete), report['summary']['particle']['count'])
+        for row in complete:
+            self.assertEqual(row['start_boundary'], 'transition')
+            self.assertEqual(row['end_boundary'], 'transition')
+            self.assertGreaterEqual(row['length_px'], 0)
+            self.assertEqual(
+                row['length'], round(row['length_px'] * report['scale'], 6)
+            )
+        truncated = [
+            row for row in report['intercepts']
+            if row['phase'] == 'particle' and not row['complete']
+        ]
+        self.assertEqual(len(truncated), report['summary']['particle_truncated']['count'])
+        for row in truncated:
+            self.assertIn(
+                'image' if 'image' in (row['start_boundary'], row['end_boundary']) else 'roi',
+                (row['start_boundary'], row['end_boundary']),
+            )
+        self.assertEqual(
+            report['truncation']['complete'] + report['truncation']['truncated'],
+            report['summary']['particle']['intercepts'],
+        )
+        self.assertEqual(
+            report['truncation']['one_end'] + report['truncation']['both_ends'],
+            report['truncation']['truncated'],
+        )
+
+    def test_intercepts_angle_change_keeps_analysis_untouched(self):
+        sample = self.demo()
+        result = self.analyze(sample)
+        labels_path = self.app.extensions['analysis'].labels(sample['id'])
+        first = self.request('POST', sample, 'intercepts', {'angle': 0, 'spacing': 50})
+        second = self.request('POST', sample, 'intercepts', {'angle': 90, 'spacing': 50})
+        third = self.request('POST', sample, 'intercepts', {'angle': 90, 'spacing': 50, 'offset': 0.5})
+        self.assertEqual(first['angle_degrees'], 0)
+        self.assertEqual(second['angle_degrees'], 90)
+        self.assertNotEqual(first['line_count'], 0)
+        self.assertNotEqual(second['line_count'], 0)
+        self.assertNotEqual(
+            [r['start'] for r in first['intercepts']],
+            [r['start'] for r in second['intercepts']],
+        )
+        self.assertNotEqual(first['line_count'] + first['line_positions'],
+                            third['line_count'] + third['line_positions'])
+        np.testing.assert_array_equal(
+            self.app.extensions['analysis'].labels(sample['id']), labels_path
+        )
+        current = self.request('GET', sample, 'result')
+        self.assertEqual(current['id'], result['id'])
+        self.assertEqual(current['count'], result['count'])
+        self.assertEqual(current['parameters'], result['parameters'])
+
+    def test_intercepts_separate_holes_and_excluded_particles(self):
+        sample = self.demo('porous')
+        result = self.analyze(
+            sample, method='otsu', polarity='dark', fill_holes=False,
+            exclude_edge=False, min_area=20000,
+        )
+        self.assertEqual(result['count'], 1)
+        self.assertEqual(result['particles'][0]['hole_count'], 40)
+        report = self.request('POST', sample, 'intercepts', {
+            'angle': 0, 'spacing': 30, 'sample_step': 0.25,
+        })
+        self.assertEqual(report['analysis_id'], result['id'])
+        self.assertGreater(report['summary']['hole']['count'], 0)
+        self.assertGreater(report['summary']['hole']['mean_length'], 0)
+        self.assertGreater(report['hole_length_distribution']['n'], 0)
+        self.assertTrue(any(row['phase'] == 'hole' for row in report['intercepts']))
+        holes = [row for row in report['intercepts'] if row['phase'] == 'hole']
+        for row in holes:
+            self.assertIsNone(row['label_id'])
+            self.assertLess(row['length'], result['particles'][0]['diameter'])
+        filtered = self.request('POST', sample, 'filter', {
+            'revision': self.meta(sample)['revision'], 'exclude_ids': [1],
+        })
+        excluded = self.request('POST', sample, 'intercepts', {'angle': 0, 'spacing': 30})
+        self.assertEqual(excluded['analysis_id'], filtered['id'])
+        self.assertEqual(excluded['summary']['particle']['intercepts'], 0)
+        self.assertGreater(excluded['summary']['excluded']['intercepts'], 0)
+        self.assertEqual(excluded['summary']['hole']['intercepts'], 0)
+        self.assertEqual(excluded['summary']['excluded']['count'], 0)
+        self.assertEqual(excluded['truncation']['truncated'], 0)
+        self.assertNotIn(1, [row['label_id'] for row in excluded['intercepts'] if row['phase'] == 'particle'])
+
+    def test_intercepts_roi_truncation_and_hole_switch(self):
+        sample = self.demo()
+        self.analyze(sample)
+        self.request('PUT', sample, 'roi', {
+            'revision': self.meta(sample)['revision'],
+            'roi': {'type': 'rectangle', 'x': 200, 'y': 160, 'width': 400, 'height': 300},
+        })
+        result = self.analyze(sample, exclude_edge=False)
+        report = self.request('POST', sample, 'intercepts', {
+            'angle': 90, 'spacing': 20, 'offset': 0.5,
+        })
+        self.assertGreater(report['truncation']['roi_edge'], 0)
+        self.assertEqual(report['truncation']['image_edge'], 0)
+        for row in report['intercepts']:
+            if row['phase'] != 'particle':
+                continue
+            self.assertNotEqual(row['start_boundary'], 'image')
+            self.assertNotEqual(row['end_boundary'], 'image')
+            self.assertIn(row['start_boundary'], ('transition', 'roi'))
+        without_holes = self.request('POST', sample, 'intercepts', {
+            'angle': 90, 'spacing': 20, 'include_holes': False,
+        })
+        self.assertEqual(without_holes['summary']['hole']['count'], 0)
+        self.assertFalse(any(row['phase'] == 'hole' for row in without_holes['intercepts']))
+
+    def test_intercepts_calibration_and_csv_export(self):
+        sample = self.demo()
+        self.request('PUT', sample, 'calibration', {
+            'revision': self.meta(sample)['revision'], 'pixel_length': 20,
+            'physical_length': 10, 'unit': 'μm',
+        })
+        self.analyze(sample)
+        pixels = self.request('POST', sample, 'intercepts', {
+            'angle': 0, 'spacing_px': 40, 'sample_step': 0.5,
+        })
+        self.assertEqual(pixels['unit'], 'μm')
+        self.assertAlmostEqual(pixels['scale'], 0.5)
+        for row in pixels['intercepts']:
+            self.assertAlmostEqual(row['length'], row['length_px'] * 0.5, places=6)
+        physical = self.request('POST', sample, 'intercepts', {
+            'angle': 0, 'spacing': 20, 'sample_step': 0.5,
+        })
+        self.assertEqual(physical['line_count'], pixels['line_count'])
+        data = self.request('POST', sample, 'intercepts.csv', {'angle': 0, 'spacing_px': 40})
+        text = data.decode('utf-8-sig')
+        self.assertEqual(len(text.splitlines()), pixels['intercept_total'] + 1)
+        self.assertIn('complete,start_boundary', text.splitlines()[0])
+        overlay = self.request('POST', sample, 'intercepts/overlay', {'angle': 45, 'spacing': 40})
+        self.assertTrue(overlay.startswith(b'\x89PNG'))
+
+    def test_intercepts_polygon_roi_and_adjacent_instances(self):
+        sample = self.demo()
+        polygon = [[192, 96], [768, 96], [768, 544], [576, 576], [192, 480]]
+        self.request('PUT', sample, 'roi', {'revision': 0, 'roi': {'type': 'polygon', 'points': polygon}})
+        result = self.analyze(sample, method='otsu', exclude_edge=False)
+        self.assertGreater(result['count'], 5)
+        report = self.request('POST', sample, 'intercepts', {'angle': 45, 'spacing': 25})
+        self.assertGreater(report['truncation']['roi_edge'], 0)
+        self.assertEqual(report['truncation']['image_edge'], 0)
+        self.assertEqual(
+            report['summary']['particle_truncated']['count'],
+            report['truncation']['truncated'],
+        )
+        for row in report['intercepts']:
+            if row['phase'] != 'particle' or row['complete']:
+                continue
+            self.assertIn('roi', (row['start_boundary'], row['end_boundary']))
+        touching = self.demo('touching')
+        self.analyze(touching, method='otsu', split_touching=True, seed_distance=20)
+        pair = self.request('POST', touching, 'intercepts', {'angle': 60, 'spacing': 25})
+        pairs = {
+            (item['start_phase'], item['end_phase']): item['count']
+            for item in pair['complete_neighbour_pairs']
+        }
+        self.assertGreater(sum(pairs.values()), 0)
+        self.assertTrue(any('particle' in key for key in pairs), pairs)
+        self.assertEqual(sum(pairs.values()), pair['summary']['particle']['count'])
+        sizes = {row['id']: row['feret_max'] for row in self.request('GET', touching, 'result')['particles']}
+        for row in pair['intercepts']:
+            if row['phase'] != 'particle' or row['label_id'] is None:
+                continue
+            self.assertLessEqual(row['length_px'], sizes[row['label_id']] + 1e-6)
+
+    def test_intercepts_reject_invalid_parameters(self):
+        sample = self.demo()
+        self.analyze(sample)
+        for payload in [
+            {'angle': 200}, {'spacing': 0}, {'spacing': -3},
+            {'sample_step': 0}, {'offset': 1.5, 'spacing': 40},
+        ]:
+            response = self.client.post(
+                '/api/samples/' + sample['id'] + '/intercepts', json=payload
+            )
+            self.assertEqual(response.status_code, 400, payload)
+        response = self.client.post('/api/samples/' + sample['id'] + '/intercepts', json={})
+        self.assertEqual(response.json['error'], '请填写测线间距')
+        response = self.client.post(
+            '/api/samples/' + sample['id'] + '/intercepts', json={'spacing_px': 0.2}
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_intercepts_requires_analysis(self):
+        sample = self.demo()
+        response = self.client.post('/api/samples/' + sample['id'] + '/intercepts', json={'spacing': 40})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('请先运行图像分析', response.json['error'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

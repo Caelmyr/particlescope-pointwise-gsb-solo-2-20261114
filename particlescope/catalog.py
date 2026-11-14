@@ -108,6 +108,16 @@ def tool_catalog():
         ], '区间左闭右开，最后一区间右端点也计入。范围外另行统计。',
     ))
     tools.append(tool(
+        'intercepts', '平行测线截距', '统计', 'intercepts', 'POST', [
+            number('angle', '测线方向角 0–180°', 0, 0, 180, 1),
+            number('spacing', '测线间距（当前长度单位）', 40, 0.000001),
+            number('offset', '首条测线偏移（间距比例）', 0, 0, 1, 0.05),
+            number('sample_step', '沿线采样步长 px', 0.5, 0.1, 5, 0.1),
+            checkbox('include_holes', '独立区分封闭孔洞', True),
+            number('bins', '长度分布分箱', 20, 3, 100, 1),
+        ], '只读取当前分割结果，不修改掩膜或分析记录。长度分布只统计两端完整的颗粒截段；孔洞、排除颗粒、图像边界和ROI边界截断分别计数。',
+    ))
+    tools.append(tool(
         'spatial', '最近邻与密度格网', '空间', 'spatial',
         note='质心间距、格网密度和ROI边缘距离。随机距离参照未做边缘修正。',
     ))

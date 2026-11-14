@@ -10,6 +10,14 @@ test_export_contents_and_report (test_workflows.Workflows.test_export_contents_a
 test_filter_preserves_detection_and_history (test_workflows.Workflows.test_filter_preserves_detection_and_history) ... ok
 test_geometry_resets_roi_calibration_annotations (test_workflows.Workflows.test_geometry_resets_roi_calibration_annotations) ... ok
 test_input_validation (test_workflows.Workflows.test_input_validation) ... ok
+test_intercepts_angle_change_keeps_analysis_untouched (test_workflows.Workflows.test_intercepts_angle_change_keeps_analysis_untouched) ... ok
+test_intercepts_basic_geometry_and_segments (test_workflows.Workflows.test_intercepts_basic_geometry_and_segments) ... ok
+test_intercepts_calibration_and_csv_export (test_workflows.Workflows.test_intercepts_calibration_and_csv_export) ... ok
+test_intercepts_polygon_roi_and_adjacent_instances (test_workflows.Workflows.test_intercepts_polygon_roi_and_adjacent_instances) ... ok
+test_intercepts_reject_invalid_parameters (test_workflows.Workflows.test_intercepts_reject_invalid_parameters) ... ok
+test_intercepts_requires_analysis (test_workflows.Workflows.test_intercepts_requires_analysis) ... ok
+test_intercepts_roi_truncation_and_hole_switch (test_workflows.Workflows.test_intercepts_roi_truncation_and_hole_switch) ... ok
+test_intercepts_separate_holes_and_excluded_particles (test_workflows.Workflows.test_intercepts_separate_holes_and_excluded_particles) ... ok
 test_isolated_ground_truth (test_workflows.Workflows.test_isolated_ground_truth) ... ok
 test_manual_edit_preserves_other_split_instances (test_workflows.Workflows.test_manual_edit_preserves_other_split_instances) ... ok
 test_manual_object_removal (test_workflows.Workflows.test_manual_object_removal) ... ok
@@ -25,6 +33,6 @@ test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_recon
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 33 tests in 17.791s
 
 OK

@@ -18,8 +18,8 @@
     },
     {
       "file": "particlescope/api.py",
-      "effective_lines": 649,
-      "sha256": "d2f988feba7eabea9b167f635b8f6449c60f7d3dc4067ddabf25f0d98415fc0d"
+      "effective_lines": 671,
+      "sha256": "804cce11714dcda8892b1cafc196720af611f90113d897bd14e39f5edecdbae4"
     },
     {
       "file": "particlescope/boundaries.py",
@@ -28,8 +28,8 @@
     },
     {
       "file": "particlescope/catalog.py",
-      "effective_lines": 255,
-      "sha256": "8c17d72fbe242142376ac5b7c2067b582e3c3de76fc236b08373fd7b768cc3c5"
+      "effective_lines": 265,
+      "sha256": "175f2ea07cb12ec3fb09725149488eabcf2369e3f47bd4572e14f4830cf05da6"
     },
     {
       "file": "particlescope/color_analysis.py",
@@ -43,13 +43,18 @@
     },
     {
       "file": "particlescope/exports.py",
-      "effective_lines": 153,
-      "sha256": "ede33213bbd10b9f8b75684afe57d9c599f061076cfd052c76578e2a6e3bfd27"
+      "effective_lines": 170,
+      "sha256": "8376f2be3fe056124f08cca89bf9d6d9813a0b34cb2e32224cd600314a5af0f5"
     },
     {
       "file": "particlescope/imaging.py",
       "effective_lines": 260,
       "sha256": "69c3f4283dcb0bda4a347ecf0f745d60f5772fbba724488a77d572379751e699"
+    },
+    {
+      "file": "particlescope/intercepts.py",
+      "effective_lines": 451,
+      "sha256": "3cbd3f970cacffbed1ccdba48ee0e1928c8b9e7e906ea716c6f84abe88042c7e"
     },
     {
       "file": "particlescope/jobs.py",
@@ -98,8 +103,8 @@
     },
     {
       "file": "particlescope/service.py",
-      "effective_lines": 222,
-      "sha256": "1f5f9df2cbbe15932c6240d00f6da5263ddcf3ecabd64a356d403007cb88a297"
+      "effective_lines": 251,
+      "sha256": "12e55ce16e28c51d31416b330fa535a8242c3d6561f6947338c46ea419b0fc0c"
     },
     {
       "file": "particlescope/spatial.py",
@@ -133,10 +138,10 @@
     },
     {
       "file": "particlescope/validation.py",
-      "effective_lines": 197,
-      "sha256": "31f7f2906c519ff841ab6bef69a0ba7671da613413ab94c47545d10fb0fa6934"
+      "effective_lines": 216,
+      "sha256": "601b48f8760be1c00250c026e2570fb020e326f4842957e8a541da8d6e6e2772"
     }
   ],
-  "total": 5134,
+  "total": 5682,
   "passes_5000": true
 }

@@ -225,6 +225,28 @@ def create_api(store, service, recipes, jobs):
             report['unit'] = meta['calibration']['unit']
             return jsonify(report)
 
+    @api.post('/samples/<key>/intercepts')
+    def intercepts(key):
+        data = body()
+        with store.lock:
+            report = service.intercepts(key, data, data.get('analysis_id'))
+        return jsonify(report)
+
+    @api.post('/samples/<key>/intercepts/overlay')
+    def intercept_overlay(key):
+        data = body()
+        with store.lock:
+            image = service.intercept_image(key, data, data.get('analysis_id'))
+        return image_response(image)
+
+    @api.post('/samples/<key>/intercepts.csv')
+    def intercept_download(key):
+        from .intercepts import intercept_csv
+        data = body()
+        with store.lock:
+            report = service.intercepts(key, data, data.get('analysis_id'))
+        return binary_response(intercept_csv(report), 'intercepts.csv', 'text/csv')
+
     @api.get('/samples/<key>/statistics')
     def statistics(key):
         with store.lock:

@@ -169,6 +169,27 @@ def segmentation(body):
     return result
 
 
+def intercepts(body):
+    body = mapping(body, '测线参数')
+    if 'spacing_px' not in body and 'spacing' not in body:
+        raise ValidationError('请填写测线间距')
+    result = {
+        'angle': real(body.get('angle', 0), '测线方向角', 0, 180),
+        'offset': real(body.get('offset', 0), '起始偏移比例', 0, 1),
+        'sample_step': real(body.get('sample_step', 0.5), '采样步长', 0.1, 5),
+        'include_holes': boolean(body.get('include_holes', True), '孔洞相'),
+        'spacing': None,
+        'spacing_px': None,
+    }
+    if 'spacing_px' in body:
+        result['spacing_px'] = real(body.get('spacing_px'), '测线间距', 0.5)
+    else:
+        result['spacing'] = real(body.get('spacing'), '测线间距', 0.000001)
+    if result['angle'] >= 180:
+        result['angle'] = result['angle'] % 180
+    return result
+
+
 def filters(body):
     body = mapping(body, '测量筛选')
     result = {}

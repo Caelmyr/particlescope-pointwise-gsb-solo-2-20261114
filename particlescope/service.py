@@ -5,7 +5,7 @@ from PIL import Image
 from . import validation as v
 from .imaging import apply_operation, region_mask, channel_array
 from .segmentation import segment, mask_edit
-from .measurements import measure_labels, summarize, apply_filters
+from .measurements import measure_labels, summarize, apply_filters, included_rows
 from .rendering import overlay_image, label_image
 from .annotations import recalibrate_annotations
 
@@ -146,6 +146,37 @@ class AnalysisService:
                 result['id'],
                 filters,
             )
+
+    def intercepts(self, sample_id, body, analysis_id=None):
+        from .intercepts import intercept_analysis
+        parameters = v.intercepts(body)
+        with self.store.lock:
+            result = self.require_result(sample_id, analysis_id)
+            meta = self.store.meta(sample_id)
+            labels = self.labels(sample_id, analysis_id)
+            selected = region_mask((result['image_width'], result['image_height']), result['roi'])
+            rows = included_rows(result)
+            report = intercept_analysis(
+                labels, selected, [r['id'] for r in rows],
+                result['calibration'], parameters,
+                v.integer(body.get('bins', 20), '分箱数', 3, 100),
+            )
+            report.update({
+                'analysis_id': result['id'],
+                'sample_revision': meta['revision'],
+                'image_revision': result['image_revision'],
+                'particle_count': len(rows),
+                'excluded_count': result.get('excluded_count', 0),
+                'roi': result['roi'],
+            })
+            return report
+
+    def intercept_image(self, sample_id, body, analysis_id=None):
+        from .intercepts import intercept_image
+        report = self.intercepts(sample_id, body, analysis_id)
+        with self.store.lock:
+            image = self.store.working_image(sample_id)
+            return intercept_image(image, report)
 
     def select_analysis(self, sample_id, analysis_id, expected_revision=None):
         with self.store.transaction(sample_id, expected_revision) as (_, meta):

@@ -1,11 +1,11 @@
 const $ = id => document.getElementById(id);
-const state = {sample:null,result:null,samples:[],catalog:null,recipes:[],selected:new Set(),view:'working',busy:false,points:[],zoom:1,dx:0,dy:0,loadToken:0};
+const state = {sample:null,result:null,samples:[],catalog:null,recipes:[],selected:new Set(),view:'working',busy:false,points:[],zoom:1,dx:0,dy:0,loadToken:0,intercepts:null,interceptPick:null,interceptHidden:new Set()};
 const segmentationFields = ['method','polarity','channel','threshold','sigma','min_area','max_area','adaptive_window','adaptive_offset','percentile','opening','closing','connectivity','fill_holes','exclude_edge','split_touching','seed_distance'];
 const stringFields = new Set(['method','polarity','channel']);
 let loadedImage = null;
 let objectURL = null;
 let jobTimer = null;
-const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率'};
+const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率',phase:'相',label_id:'颗粒编号',length_px:'长度 px',length:'长度',complete:'完整截段',start_boundary:'起点边界',end_boundary:'终点边界',start:'起点',end:'终点',line:'测线',category:'截段分类',midpoint:'中点',phase_total:'相截段合计',intercepts:'截段数',truncated_intercepts:'截断截段数',total_length:'总长度',mean_length:'平均长度',median_length:'中位长度',spacing:'测线间距',spacing_px:'间距 px',angle_degrees:'方向角',line_count:'有效测线',line_positions:'布置测线',intercept_total:'截段合计',include_holes:'区分孔洞',offset_fraction:'首线偏移',sample_step_px:'采样步长 px',image_edge:'图像边界',roi_edge:'ROI边界',one_end:'单端截断',both_ends:'双端截断',today:'',particle:'颗粒截段',particle_truncated:'截断颗粒截段',void:'基体截段',hole:'孔洞截段',excluded:'排除颗粒截段',start_neighbour:'起点相邻相',end_neighbour:'终点相邻相',start_phase:'起点相',end_phase:'终点相',count:'数量'};
 function label(key){return labels[key] || key.replaceAll('_',' ')}
 function el(tag, text, cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
 function status(message,error=false){$('status').textContent=message;$('status').classList.toggle('error',error)}
@@ -117,7 +117,7 @@ async function selectSample(key){
   if(state.busy)return status('当前操作进行中，请稍候');
   const token=++state.loadToken;const data=await request(`/api/samples/${key}`);
   if(token!==state.loadToken)return;
-  state.sample=data.meta;state.view='working';state.points=[];loadedImage=null;resetView();
+  state.sample=data.meta;state.view='working';state.points=[];state.intercepts=null;loadedImage=null;resetView();
   $('name').textContent=data.meta.name;$('size').textContent=`${data.meta.width} × ${data.meta.height} px`;
   $('archive').textContent=data.meta.archived?'恢复':'归档';
   $('sampleInfo').textContent=`分析区域：${data.meta.roi.type}；标定：1 px = ${fmt(data.meta.calibration.scale)} ${data.meta.calibration.unit}。图像版本 ${data.meta.image_revision}，修订 ${data.meta.revision}。`;
@@ -129,7 +129,7 @@ async function selectSample(key){
   status(state.result?'样本与保存的分析已载入':'样本已载入，调整参数后运行分析');
 }
 async function refreshSample(){
-  const key=requireSample().id;const data=await request(`/api/samples/${key}`);state.sample=data.meta;
+  const key=requireSample().id;const data=await request(`/api/samples/${key}`);state.sample=data.meta;state.intercepts=null;state.interceptPick=null;
   $('name').textContent=data.meta.name;$('size').textContent=`${data.meta.width} × ${data.meta.height} px`;
   $('sampleInfo').textContent=`分析区域：${data.meta.roi.type}；1 px = ${fmt(data.meta.calibration.scale)} ${data.meta.calibration.unit}；图像版本 ${data.meta.image_revision}，修订 ${data.meta.revision}。`;
   state.result=await request(url('result'));renderResult();await loadLibrary();
@@ -144,8 +144,21 @@ function showImage(){
   image.onerror=()=>status(state.view==='reference'?'当前样本没有参考掩膜':'图像尚未生成，请先运行分析',true);
   image.src=url(`image/${state.view}`)+`?v=${state.sample.revision}`;
 }
+function drawIntercepts(){
+  const data=state.intercepts;if(!data||!data.geometry)return;
+  const canvas=$('canvas');const ctx=canvas.getContext('2d');const geometry=data.geometry;const [cx,cy]=geometry.center;const [dx,dy]=geometry.direction;const [nx,ny]=geometry.normal;
+  const width=Math.max(1,canvas.width/900);
+  ctx.save();ctx.lineWidth=width;ctx.strokeStyle='rgba(255,255,255,.22)';
+  for(const entry of data.per_line){const start=[cx+nx*entry.position+dx*geometry.t_min,cy+ny*entry.position+dy*geometry.t_min];const end=[cx+nx*entry.position+dx*geometry.t_max,cy+ny*entry.position+dy*geometry.t_max];ctx.beginPath();ctx.moveTo(...start);ctx.lineTo(...end);ctx.stroke()}
+  const colors={complete:'#4bf0c0',truncated:'#ffb340',hole:'#ff6cc8',excluded:'#c0c8cf',void:'rgba(120,170,210,.4)'};
+  const marker=Math.max(2.5,canvas.width/420);ctx.lineCap='round';
+  for(const row of data.intercepts){if(row.phase==='void')continue;const key=row.phase==='particle'?(row.complete?'complete':'truncated'):row.phase;if(state.interceptHidden.has(key))continue;ctx.strokeStyle='rgba(8,14,18,.65)';ctx.lineWidth=width*3;ctx.beginPath();ctx.moveTo(...row.start);ctx.lineTo(...row.end);ctx.stroke();ctx.strokeStyle=colors[key]||colors.excluded;ctx.fillStyle=ctx.strokeStyle;ctx.lineWidth=width*1.6;ctx.beginPath();ctx.moveTo(...row.start);ctx.lineTo(...row.end);ctx.stroke();for(const point of [row.start,row.end]){ctx.beginPath();ctx.arc(...point,marker,0,Math.PI*2);ctx.fill()}}
+  const pick=state.interceptPick;if(pick){ctx.save();ctx.lineWidth=Math.max(2,canvas.width/300);ctx.strokeStyle='#ffd166';ctx.beginPath();ctx.arc(...pick.midpoint,Math.max(8,canvas.width/90),0,Math.PI*2);ctx.stroke();ctx.restore()}
+  ctx.restore();
+}
 function drawCanvas(){
-  if(!loadedImage)return;const canvas=$('canvas');const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(loadedImage,0,0);
+  if(!loadedImage)return;$('clearIntercepts').hidden=!state.intercepts;const canvas=$('canvas');if(canvas.width!==loadedImage.naturalWidth||canvas.height!==loadedImage.naturalHeight){canvas.width=loadedImage.naturalWidth;canvas.height=loadedImage.naturalHeight}const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(loadedImage,0,0);
+  if(state.intercepts)drawIntercepts();
   const roi=state.sample?.roi;
   if(roi&&roi.type!=='full'){
     ctx.strokeStyle='#ffcd62';ctx.lineWidth=Math.max(2,canvas.width/350);ctx.setLineDash([8,5]);ctx.beginPath();
@@ -166,10 +179,12 @@ $('viewport').onpointerdown=e=>{if(!state.sample||state.busy)return;if($('canvas
 $('viewport').onpointermove=e=>{if(!drag)return;state.dx=drag.dx+e.clientX-drag.x;state.dy=drag.dy+e.clientY-drag.y;transform()};
 $('viewport').onpointerup=$('viewport').onpointercancel=()=>drag=null;
 $('canvas').onclick=guard(async e=>{
-  if(state.busy||$('canvasMode').value==='pan')return;requireSample();
+  if(state.busy)return;requireSample();
   if(state.view==='original'&&(loadedImage?.naturalWidth!==state.sample.width||loadedImage?.naturalHeight!==state.sample.height))throw Error('原图与当前图像尺寸不同，请切换到当前图像再测量');
   const rect=$('canvas').getBoundingClientRect();const point=[Math.max(0,Math.min(state.sample.width-1,(e.clientX-rect.left)/rect.width*$('canvas').width)),Math.max(0,Math.min(state.sample.height-1,(e.clientY-rect.top)/rect.height*$('canvas').height))];
   const mode=$('canvasMode').value;
+  if(mode==='pan'){if(state.intercepts){const hit=interceptHit(point);if(hit){showIntercept(hit);return}}return}
+  if(state.intercepts&&mode==='pick'){const hit=interceptHit(point);if(hit){showIntercept(hit);return}}
   if(mode==='pick'){
     const particle=await post(url('pick'),{point});if(!particle)return status('该位置没有颗粒');showParticle(particle);return;
   }
@@ -177,8 +192,9 @@ $('canvas').onclick=guard(async e=>{
   const required={rectangle:2,line:2,angle:3,point:1,profile:2,remove_object:1};
   if(required[mode]&&state.points.length===required[mode])await finishDrawing();
 });
-$('canvasMode').onchange=()=>{state.points=[];drawCanvas();status('在图像上点击选择坐标；多边形完成后点击“完成绘制”')};
+$('canvasMode').onchange=()=>{state.points=[];state.interceptPick=null;drawCanvas();status(state.intercepts?'在图像上点击截段可查看长度；重画测线请在“平行测线”中修改方向后运行':'在图像上点击选择坐标；多边形完成后点击“完成绘制”')};
 $('cancelDrawing').onclick=()=>{state.points=[];drawCanvas();status('绘制已取消')};
+$('clearIntercepts').onclick=()=>{state.intercepts=null;drawCanvas();status('已清除画布测线；分析结果未受影响')};
 $('finishDrawing').onclick=guard(finishDrawing);
 async function finishDrawing(){
   requireSample();const mode=$('canvasMode').value;const points=state.points.slice();
@@ -334,6 +350,20 @@ function openTool(key){
   controls.append(makeForm(tool.fields,'运行 '+tool.label,async data=>{
     output.replaceChildren(el('p','正在计算…','muted'));
     if(key==='sweep')data.parameters=parameters();
+    if(key==='intercepts'){
+      requireResult();
+      data.analysis_id=state.result.id;
+      const result=await task('正在计算 '+tool.label+'…',()=>post(url(tool.path),data));
+      state.intercepts=result;state.view='working';drawCanvas();
+      output.replaceChildren();renderInterceptReport(result,output);
+      const actions=el('div',undefined,'result-actions');
+      const again=el('button','按当前方向重算');again.onclick=()=>controls.querySelector('form').requestSubmit();
+      const save=el('button','下载截距 CSV');save.onclick=guard(async()=>{const blob=await request(url('intercepts.csv'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const a=el('a');const objectUrl=URL.createObjectURL(blob);a.href=objectUrl;a.download='intercepts.csv';a.click();setTimeout(()=>URL.revokeObjectURL(objectUrl),1000)});
+      const clear=el('button','清除画布测线');clear.onclick=()=>{state.intercepts=null;drawCanvas();status('已清除画布测线')};
+      actions.append(again,save,clear);output.append(actions);
+      status(tool.label+'完成：'+fmt(result.summary.particle.count)+' 段完整颗粒截距');
+      return;
+    }
     const result=await task('正在计算 '+tool.label+'…',()=>tool.method==='GET'?request(url(tool.path)):post(url(tool.path),data));
     output.replaceChildren();
     if(tool.output==='image'){
@@ -345,6 +375,63 @@ function openTool(key){
     status(tool.label+'完成');
   }));layout.append(controls,output);body.append(layout);
   if(tool.method==='GET')controls.querySelector('form').requestSubmit();
+}
+function interceptPhaseCards(result, target){
+  const summary=result.summary;const cards=el('div',undefined,'metric-grid');
+  const items=[
+    ['完整颗粒截段',summary.particle.count,`均值 ${fmt(summary.particle.mean_length)} · 中位 ${fmt(summary.particle.median_length)} ${result.unit}`],
+    ['截断颗粒截段',summary.particle_truncated.count,`${fmt(result.truncation.one_end)} 段单端 · ${fmt(result.truncation.both_ends)} 段双端截断`],
+    ['孔洞截段',summary.hole.count,`均值 ${fmt(summary.hole.mean_length)} ${result.unit}`],
+    ['排除颗粒截段',summary.excluded.count,'不进入长度分布'],
+    ['有效测线',`${result.line_count} / ${fmt(result.line_positions)}`,'有截段的测线 / 布置测线'],
+  ];
+  for(const [name,value,note]of items){const card=el('div',undefined,'metric-card');card.append(el('small',name),el('strong',fmt(value)),el('small',note));cards.append(card)}
+  target.append(cards);
+}
+function interceptHit(point){
+  const data=state.intercepts;if(!data)return null;
+  const [px,py]=point;let best=null,bestDistance=Infinity;
+  for(const row of data.intercepts){
+    if(row.phase==='void')continue;
+    const key=row.phase==='particle'?(row.complete?'complete':'truncated'):row.phase;
+    if(state.interceptHidden.has(key))continue;
+    const [x1,y1]=row.start,[x2,y2]=row.end;const dx=x2-x1,dy=y2-y1;const lengthSquared=dx*dx+dy*dy;
+    const t=lengthSquared?Math.max(0,Math.min(1,((px-x1)*dx+(py-y1)*dy)/lengthSquared)):0;
+    const distance=Math.hypot(px-(x1+dx*t),py-(y1+dy*t));
+    if(distance<bestDistance){bestDistance=distance;best=row}
+  }
+  return bestDistance<=Math.max(4,$('canvas').width/120)?best:null;
+}
+function showIntercept(row){
+  state.interceptPick=row;drawCanvas();
+  const body=openDialog(`截段 #${row.id} · ${row.phase}`);
+  const names={particle:'颗粒',void:'基体',hole:'孔洞',excluded:'排除颗粒'};
+  const category=row.phase==='particle'?(row.complete?'完整颗粒截段':'截断颗粒截段'):names[row.phase];
+  body.append(el('p',`测线 ${row.line} · 分类 ${category} · 长度 ${fmt(row.length)} ${state.intercepts.unit}`,'hint'));
+  renderOutput({phase:row.phase,label_id:row.label_id,length_px:row.length_px,length:row.length,complete:row.complete,start_boundary:row.start_boundary,end_boundary:row.end_boundary,start_neighbour:row.start_neighbour,end_neighbour:row.end_neighbour,start:row.start,end:row.end},body);
+  if(row.phase==='particle'&&row.label_id){const button=el('button','查看颗粒 #'+row.label_id);button.onclick=guard(()=>{const particle=state.result?.particles.find(p=>p.id===row.label_id);if(particle)showParticle(particle);else status('该颗粒不在当前测量结果中',true)});body.append(button)}
+}
+function interceptLegend(result,target){
+  const entries=[['complete','完整颗粒截段',result.summary.particle.count],['truncated','截断颗粒截段',result.summary.particle_truncated.count],['hole','孔洞截段',result.summary.hole.count],['excluded','排除颗粒截段',result.summary.excluded.count]];
+  const colors={complete:'#4bf0c0',truncated:'#ffb340',hole:'#ff6cc8',excluded:'#c0c8cf'};
+  const row=el('div',undefined,'intercept-legend');
+  for(const [key,name,count]of entries){const label=el('label'),check=el('input');check.type='checkbox';check.checked=!state.interceptHidden.has(key);check.onchange=()=>{check.checked?state.interceptHidden.delete(key):state.interceptHidden.add(key);drawCanvas()};const dot=el('span',undefined,'legend-dot');dot.style.background=colors[key];label.append(check,dot,el('span',`${name} ${fmt(count)}`));row.append(label)}
+  target.append(row);
+  target.append(el('p','画布上点击任一彩色截段可查看该截段长度、端点类型和所属颗粒编号；测线只读取当前结果，不修改分割。','muted'));
+}
+function renderInterceptReport(result, target){
+  target.append(el('p',`方向 ${result.angle_degrees}° · 间距 ${fmt(result.spacing??result.spacing_px)} ${result.unit} · 偏移 ${fmt(result.offset_fraction)} · 采样步长 ${fmt(result.sample_step_px)} px。`,'hint'));
+  interceptPhaseCards(result,target);
+  interceptLegend(result,target);
+  if(result.complete_neighbour_pairs?.length)renderOutput({完整截段相邻相组合:result.complete_neighbour_pairs},target);
+  renderOutput({截断计数:result.truncation,分测线:result.per_line},target);
+  if(result.length_distribution.n){chart([{name:'完整颗粒截距 %',values:result.length_distribution.percent}],'完整颗粒截距长度分布',target);chart([{name:'累计 %',values:result.length_distribution.cumulative_percent}],'累计分布',target);renderOutput({长度分布:result.length_distribution},target)}
+  if(result.hole_length_distribution.n)renderOutput({孔洞长度分布:result.hole_length_distribution},target);
+  const rows=result.intercepts.filter(r=>r.phase!=='void');
+  target.append(el('h3','截段明细'));
+  renderOutput(rows.slice(0,200),target);
+  if(rows.length>200)target.append(el('p',`页面显示前200段，共${rows.length}段；下载CSV可查看全部。`,'muted'));
+  target.append(el('p',`按定义：${Object.values(result.definitions).join('；')}。`,'hint'));
 }
 document.querySelectorAll('[data-tool]').forEach(button=>button.onclick=guard(()=>openTool(button.dataset.tool)));
 $('compare').onclick=guard(()=>{
