@@ -18,6 +18,7 @@ from particlescope.registration import phase_correlation, translate, affine_land
 from particlescope.segmentation import evaluate_reference
 from particlescope.measurements import crofton_perimeter
 from particlescope.morphology import skeletonize
+from particlescope.texture import radial_power_spectrum
 
 
 class Workflows(unittest.TestCase):
@@ -319,6 +320,119 @@ class Workflows(unittest.TestCase):
         circle = (x - 50) ** 2 + (y - 50) ** 2 <= 30 ** 2
         perimeter = crofton_perimeter(circle)
         self.assertAlmostEqual(perimeter, 2 * np.pi * 30, delta=5)
+
+
+def _stripe_image(period, size=320, amplitude=60.0, angle=0.0, noise=0.0, seed=0):
+    rng = np.random.default_rng(seed)
+    y, x = np.indices((size, size))
+    phase = x if angle == 0.0 else x * np.cos(np.radians(angle)) + y * np.sin(np.radians(angle))
+    field = 128 + amplitude * np.sin(2 * np.pi * phase / period)
+    if noise:
+        field += rng.normal(0, noise, field.shape)
+    rgb = np.clip(np.stack([field] * 3, axis=-1), 0, 255).astype(np.uint8)
+    return Image.fromarray(rgb)
+
+
+def _rect(width, height, x=0, y=0):
+    return {'type': 'rectangle', 'x': x, 'y': y, 'width': width, 'height': height}
+
+
+class RadialSpectrum(unittest.TestCase):
+    def test_uniform_region_has_no_confirmed_period(self):
+        flat = Image.fromarray(np.full((256, 256, 3), 137, np.uint8))
+        for region in [{'type': 'full'}, _rect(120, 90, 40, 40),
+                       {'type': 'ellipse', 'x': 20, 'y': 20, 'width': 100, 'height': 80}]:
+            result = radial_power_spectrum(flat, region)
+            self.assertEqual(result['peak_status'], 'unconfirmed')
+            self.assertEqual(result['unconfirmed_reason'], 'uniform_region')
+            self.assertIsNone(result['peak_frequency'])
+            self.assertIsNone(result['peak_period_px'])
+            self.assertEqual(len(result['mean_power']), 32)
+
+    def test_random_noise_does_not_define_a_period(self):
+        rng = np.random.default_rng(11)
+        noise = np.clip(128 + rng.normal(0, 20, (256, 256)), 0, 255)
+        image = Image.fromarray(np.stack([noise] * 3, axis=-1).astype(np.uint8))
+        for region in [{'type': 'full'}, _rect(140, 140, 50, 50)]:
+            result = radial_power_spectrum(image, region)
+            self.assertEqual(result['peak_status'], 'unconfirmed')
+            self.assertLess(result['peak_prominence'], 3.0)
+
+    def test_smooth_gradient_is_not_periodic(self):
+        gradient = np.tile(np.linspace(40, 210, 256), (256, 1))
+        image = Image.fromarray(np.stack([gradient] * 3, axis=-1).astype(np.uint8))
+        result = radial_power_spectrum(image, {'type': 'full'})
+        self.assertEqual(result['peak_status'], 'unconfirmed')
+        self.assertIsNone(result['peak_period_px'])
+
+    def test_stripe_period_is_consistent_across_windows(self):
+        image = _stripe_image(16, size=320)
+        regions = [
+            {'type': 'full'},
+            _rect(240, 240, 30, 30),
+            _rect(128, 128, 96, 96),
+            {'type': 'ellipse', 'x': 40, 'y': 60, 'width': 180, 'height': 160},
+            _rect(96, 96, 120, 120),
+        ]
+        periods = []
+        for region in regions:
+            result = radial_power_spectrum(image, region)
+            self.assertEqual(result['peak_status'], 'stable', region)
+            self.assertIsNotNone(result['peak_period_px'])
+            periods.append(result['peak_period_px'])
+            # 亚分箱细化后误差远小于一个径向分箱（旧实现固定报14.2px）
+            self.assertAlmostEqual(result['peak_period_px'], 16, delta=0.6)
+            self.assertGreaterEqual(result['observed_cycles'], 3.0)
+        self.assertLess(max(periods) - min(periods), 0.8)
+
+    def test_off_bin_period_is_recovered_without_quantization_bias(self):
+        image = _stripe_image(23, size=320)
+        result = radial_power_spectrum(image, {'type': 'full'})
+        self.assertEqual(result['peak_status'], 'stable')
+        self.assertAlmostEqual(result['peak_period_px'], 23, delta=0.7)
+
+    def test_short_window_marks_peak_unconfirmed_instead_of_false_period(self):
+        image = _stripe_image(30, size=320)
+        result = radial_power_spectrum(image, _rect(64, 64, 100, 100))
+        self.assertEqual(result['peak_status'], 'unconfirmed')
+        self.assertIn(result['unconfirmed_reason'],
+                      ('insufficient_cycles', 'no_resolved_peak'))
+
+    def test_rotated_and_two_dimensional_texture_keep_stable_peak(self):
+        rotated = _stripe_image(18, size=320, angle=35)
+        result = radial_power_spectrum(rotated, _rect(200, 200, 40, 40))
+        self.assertEqual(result['peak_status'], 'stable')
+        self.assertAlmostEqual(result['peak_period_px'], 18, delta=0.8)
+
+        y, x = np.indices((320, 320))
+        checker = 128 + 50 * ((x // 7 + y // 7) % 2 * 2 - 1)
+        image = Image.fromarray(np.clip(np.stack([checker] * 3, axis=-1), 0, 255).astype(np.uint8))
+        result = radial_power_spectrum(image, _rect(160, 160, 40, 40))
+        self.assertEqual(result['peak_status'], 'stable')
+        self.assertAlmostEqual(result['peak_period_px'], 9.9, delta=0.8)
+
+    def test_weak_texture_grades_into_tentative_and_unconfirmed(self):
+        strong = radial_power_spectrum(_stripe_image(20, noise=15, amplitude=6), {'type': 'full'})
+        weak = radial_power_spectrum(_stripe_image(20, noise=15, amplitude=4), {'type': 'full'})
+        buried = radial_power_spectrum(_stripe_image(20, noise=15, amplitude=2), {'type': 'full'})
+        self.assertEqual(strong['peak_status'], 'stable')
+        self.assertEqual(weak['peak_status'], 'tentative')
+        self.assertEqual(buried['peak_status'], 'unconfirmed')
+        # 即便无法确认，也保留候选频率和可比较的功率曲线
+        self.assertIsNotNone(buried['peak_frequency'])
+        self.assertEqual(len(buried['mean_power']), 32)
+
+    def test_power_curves_are_comparable_between_window_sizes(self):
+        image = _stripe_image(16, size=320)
+        full = radial_power_spectrum(image, {'type': 'full'})
+        small = radial_power_spectrum(image, _rect(128, 128, 96, 96))
+        self.assertEqual(full['frequency_cycles_per_pixel'], small['frequency_cycles_per_pixel'])
+        peak_f = full['peak_frequency']
+        index = min(range(32), key=lambda i: abs(full['frequency_cycles_per_pixel'][i] - peak_f))
+        # 两个观察窗的峰都落在同一径向分箱，且归一化功率量级一致
+        self.assertEqual(small['peak_status'], 'stable')
+        self.assertGreater(full['mean_power'][index], 0)
+        self.assertGreater(small['mean_power'][index], 0)
 
 
 if __name__ == '__main__':

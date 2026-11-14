@@ -137,7 +137,7 @@ def tool_catalog():
     ))
     tools.append(tool(
         'spectrum', '径向频谱', '纹理', 'spectrum',
-        note='最大400万像素，移除均值并加Hann窗，输出频率及对应周期。',
+        note='最大400万像素，观察窗内加Hann窗；区分稳定峰、弱候选峰与无法确认的峰，避免把窗口边界和纯色区域当成周期。',
     ))
     tools.append(tool(
         'color', '颜色空间统计', '颜色', 'color',

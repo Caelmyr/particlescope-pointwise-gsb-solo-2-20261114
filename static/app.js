@@ -5,7 +5,7 @@ const stringFields = new Set(['method','polarity','channel']);
 let loadedImage = null;
 let objectURL = null;
 let jobTimer = null;
-const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率'};
+const labels = {count:'颗粒数',coverage:'覆盖率 %',mean_diameter:'平均直径',median_diameter:'中位直径',unit:'单位',scale:'每像素长度',area:'面积',diameter:'等效直径',circularity:'圆度',aspect_ratio:'长宽比',solidity:'实心度',mean_intensity:'平均灰度',std_intensity:'灰度标准差',perimeter:'周长',major_axis:'长轴',minor_axis:'短轴',feret_max:'最大Feret径',feret_min:'最小Feret径',orientation:'方向角',eccentricity:'偏心率',extent:'矩形填充率',roughness:'边界粗糙度',n:'样本数',mean:'均值',std:'标准差',median:'中位数',minimum:'最小值',maximum:'最大值',q1:'第一四分位',q3:'第三四分位',iqr:'四分位距',ci95_low:'95%区间下限',ci95_high:'95%区间上限',skewness:'偏度',kurtosis:'峰度',sem:'标准误',cv_percent:'变异系数 %',number_distribution:'数量加权分布',area_distribution:'面积加权分布',volume_distribution:'体积加权分布',descriptive:'描述统计',nearest_neighbors:'最近邻距离',quadrat:'密度格网',edge_distance:'ROI边缘距离',summary:'汇总',warning:'说明',assumption:'假设',method:'方法',count_change:'数量变化',coverage_change:'覆盖率变化',pixel_agreement:'像素一致性',matching:'对象匹配',first:'样本A',second:'样本B',clusters:'聚类',noise_ids:'噪声颗粒编号',mean_difference:'均值差 A−B',mean_ratio:'均值比 A/B',wasserstein_distance:'Wasserstein距离',ks_statistic:'KS统计量',ks_p_value:'KS P值',welch_p_value:'Welch P值',cohen_d:'Cohen d',d10:'D10',d50:'D50',d90:'D90',span:'分布Span',entropy:'熵',contrast:'对比度',homogeneity:'同质性',energy:'能量',correlation:'相关性',id:'编号',included:'纳入统计',centroid_x:'质心X',centroid_y:'质心Y',true_positive:'前景正确像素',false_positive:'误检像素',false_negative:'漏检像素',iou:'IoU',dice:'Dice',precision:'精确率',recall:'召回率',pixel_accuracy:'像素准确率',peak_status:'峰状态',peak_label:'峰判定',peak_frequency:'峰频率（周期/像素）',peak_period_px:'主周期（像素）',peak_prominence:'峰显著性',peak_energy_concentration:'峰能量集中度',observed_cycles:'观察窗内周期数',unconfirmed_reason:'无法确认原因',interpretation:'解读',window:'观察窗',resolution:'可分辨频率范围',contrast_std:'区域灰度标准差',min_resolvable_frequency:'最低可分辨频率',max_resolvable_frequency:'最高可分辨频率',min_observed_cycles:'最少周期数'};
 function label(key){return labels[key] || key.replaceAll('_',' ')}
 function el(tag, text, cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
 function status(message,error=false){$('status').textContent=message;$('status').classList.toggle('error',error)}
@@ -289,6 +289,7 @@ function chart(series,title,container,options={}){
   const left=55,right=870,top=50,bottom=260;const values=series.flatMap(s=>s.values.map(v=>Number(v)||0));const low=options.zero===false?Math.min(...values):Math.min(0,...values);const high=Math.max(...values,low+1);const colors=['#64e4ba','#efa95c','#87b7fa'];c.strokeStyle='#3d5567';c.beginPath();c.moveTo(left,top);c.lineTo(left,bottom);c.lineTo(right,bottom);c.stroke();
   for(let i=0;i<=4;i++){const y=bottom-i*(bottom-top)/4;c.fillStyle='#9bb5c6';c.font='11px sans-serif';c.fillText(fmt(low+(high-low)*i/4).slice(0,8),3,y);c.strokeStyle='#263e4d';c.beginPath();c.moveTo(left,y);c.lineTo(right,y);c.stroke()}
   series.forEach((s,idx)=>{c.strokeStyle=colors[idx%colors.length];c.fillStyle=colors[idx%colors.length];c.lineWidth=2;c.beginPath();s.values.forEach((value,i)=>{const x=left+(right-left)*i/Math.max(s.values.length-1,1),y=bottom-(Number(value)-low)/(high-low)*(bottom-top);if(options.scatter){c.moveTo(x+2,y);c.arc(x,y,2,0,Math.PI*2)}else{i?c.lineTo(x,y):c.moveTo(x,y)}});options.scatter?c.fill():c.stroke();c.fillText(s.name,180+idx*210,25)});
+  if(options.marker){const s=series[0];const i=Math.min(options.marker.index,s.values.length-1);const x=left+(right-left)*i/Math.max(s.values.length-1,1);const y=bottom-(Number(s.values[i])-low)/(high-low)*(bottom-top);c.strokeStyle=options.marker.color;c.fillStyle=options.marker.color;c.lineWidth=2;c.setLineDash([5,4]);c.beginPath();c.moveTo(x,top);c.lineTo(x,bottom);c.stroke();c.setLineDash([]);c.beginPath();c.arc(x,y,5,0,Math.PI*2);c.fill();c.font='12px sans-serif';c.fillText(options.marker.label,x+8,top+14);}
 }
 function renderOutput(data,target,depth=0){
   if(data===null||data===undefined){target.append(el('p','暂无结果'));return}
@@ -307,7 +308,20 @@ function renderOutput(data,target,depth=0){
   if(data.percent&&data.edges){chart([{name:'比例 %',values:data.percent}],'粒径分布（等序分箱）',target);plotted.add('percent');plotted.add('edges');plotted.add('counts');if(data.cumulative_percent){chart([{name:'累计 %',values:data.cumulative_percent}],'累计粒径分布',target);plotted.add('cumulative_percent')}}
   if(data.bins&&Array.isArray(data.bins)){chart([{name:'像素数',values:data.bins}],'灰度直方图 · 0–255',target);plotted.add('bins')}
   if(data.first_percent){chart([{name:'样本A %',values:data.first_percent},{name:'样本B %',values:data.second_percent}],'双样本分布对照（相同分箱）',target);plotted.add('first_percent');plotted.add('second_percent');plotted.add('edges')}
-  if(data.mean_power){chart([{name:'平均功率',values:data.mean_power}],'径向频率功率谱',target);plotted.add('mean_power');plotted.add('frequency_cycles_per_pixel')}
+  if(data.mean_power){
+    const title = data.peak_status==='stable' ? `径向频率功率谱 · ${data.peak_label}，主周期 ${fmt(data.peak_period_px)} px`
+      : data.peak_status==='tentative' ? `径向频率功率谱 · ${data.peak_label}（周期 ${fmt(data.peak_period_px)} px，需交叉确认）`
+      : '径向频率功率谱 · 无法确认的峰（功率曲线仍可比较）';
+    let marker;
+    if(data.peak_frequency){
+      const freqs=data.frequency_cycles_per_pixel;
+      let idx=0,best=Infinity;
+      freqs.forEach((f,i)=>{const d=Math.abs(f-data.peak_frequency);if(d<best){best=d;idx=i}});
+      marker={index:idx,label:data.peak_label,color:data.peak_status==='stable'?'#64e4ba':data.peak_status==='tentative'?'#efa95c':'#e0717a'};
+    }
+    chart([{name:'平均功率',values:data.mean_power}],title,target,{marker});
+    plotted.add('mean_power');plotted.add('frequency_cycles_per_pixel');
+  }
   if(data.g&&data.radii){chart([{name:'g(r)',values:data.g}],'径向对分布',target);plotted.add('g');plotted.add('radii')}
   if(data.l_minus_r){chart([{name:'L(r) − r',values:data.l_minus_r}],'Ripley函数',target);plotted.add('l_minus_r');plotted.add('k');plotted.add('radii')}
   if(data.normalized_radius){chart([{name:'归一化半径',values:data.normalized_radius}],'径向形状 · 0°–360°',target);plotted.add('normalized_radius');plotted.add('radius_px');plotted.add('angles_degrees')}
