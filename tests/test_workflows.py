@@ -204,9 +204,133 @@ class Workflows(unittest.TestCase):
         texture = self.request('GET', sample, 'texture')
         self.assertGreaterEqual(texture['glcm']['average']['homogeneity'], 0)
         self.assertLessEqual(texture['glcm']['average']['homogeneity'], 1)
+        self.assertEqual(texture['glcm']['defined_directions'], 4)
+        for entry in texture['multiscale']:
+            if not entry['defined']:
+                self.assertIsNone(entry['residual_std'])
+                self.assertIsNone(entry['laplacian_energy'])
         profile = self.request('POST', sample, 'profile', {'start': [10, 10], 'end': [110, 10], 'samples': 101})
         self.assertEqual(profile['length_px'], 100)
         self.assertEqual(len(profile['intensity']), 101)
+
+    def test_texture_ignores_background_outside_roi(self):
+        """Identical ROI content, different outside background: same results."""
+        rng = np.random.default_rng(4)
+        content = (110 + rng.integers(0, 40, size=(12, 14))).astype(np.uint8)
+        roi = {'type': 'rectangle', 'x': 30, 'y': 20, 'width': 14, 'height': 12}
+        reports = []
+        spectra = []
+        for background in (250, 5):
+            canvas = np.full((70, 90, 3), background, dtype=np.uint8)
+            canvas[20:32, 30:44] = content[:, :, None]
+            sample = self.import_image(Image.fromarray(canvas))
+            self.request('PUT', sample, 'roi', {'revision': 0, 'roi': roi})
+            reports.append(self.request('GET', sample, 'texture'))
+            spectra.append(self.request('GET', sample, 'spectrum'))
+        first, second = reports
+        self.assertEqual(first['region_pixels'], 14 * 12)
+        self.assertEqual(first['glcm']['total_pairs'], second['glcm']['total_pairs'])
+        self.assertEqual(first['glcm']['average'], second['glcm']['average'])
+        self.assertEqual(first['gradient']['mean_gradient'], second['gradient']['mean_gradient'])
+        self.assertEqual(first['gradient']['gradient_pixels'], second['gradient']['gradient_pixels'])
+        self.assertEqual(first['lbp']['pixel_count'], second['lbp']['pixel_count'])
+        self.assertEqual(first['lbp']['histogram'], second['lbp']['histogram'])
+        for one, two in zip(first['multiscale'], second['multiscale']):
+            self.assertEqual(one, two)
+        self.assertEqual(spectra[0]['mean_power'], spectra[1]['mean_power'])
+
+    def test_narrow_strip_reports_per_direction_validity(self):
+        """A 1px strip has pairs along 90° only; other directions are null."""
+        canvas = np.full((40, 40, 3), 7, dtype=np.uint8)
+        values = (40 + np.arange(20) * 3).astype(np.uint8)
+        canvas[10:30, 18] = values[:, None]
+        sample = self.import_image(Image.fromarray(canvas))
+        self.request('PUT', sample, 'roi', {
+            'revision': 0, 'roi': {'type': 'rectangle', 'x': 18, 'y': 10, 'width': 1, 'height': 20},
+        })
+        texture = self.request('GET', sample, 'texture')
+        by_angle = {row['angle']: row for row in texture['glcm']['directions']}
+        self.assertTrue(by_angle[90]['defined'])
+        self.assertGreater(by_angle[90]['pairs'], 0)
+        for angle in (0, 45, 135):
+            self.assertFalse(by_angle[angle]['defined'], angle)
+            self.assertEqual(by_angle[angle]['pairs'], 0)
+            for name in ('contrast', 'homogeneity', 'entropy'):
+                self.assertIsNone(by_angle[angle][name], (angle, name))
+        self.assertEqual(texture['glcm']['defined_directions'], 1)
+        # Averaging must use only directions that were actually observed.
+        self.assertEqual(texture['glcm']['average']['contrast'], by_angle[90]['contrast'])
+        self.assertFalse(texture['gradient']['defined'])
+        self.assertIsNone(texture['gradient']['mean_gradient'])
+        self.assertIsNone(texture['gradient']['orientation_weight'])
+        self.assertFalse(texture['lbp']['defined'])
+        self.assertIsNone(texture['lbp']['probability'])
+        self.assertEqual(texture['lbp']['histogram'], [])
+        self.assertTrue(texture['warnings'])
+
+    def test_single_pixel_region_is_undefined_everywhere(self):
+        canvas = np.full((40, 40, 3), 240, dtype=np.uint8)
+        canvas[18, 18] = 20
+        sample = self.import_image(Image.fromarray(canvas))
+        self.request('PUT', sample, 'roi', {
+            'revision': 0, 'roi': {'type': 'rectangle', 'x': 18, 'y': 18, 'width': 1, 'height': 1},
+        })
+        texture = self.request('GET', sample, 'texture')
+        self.assertFalse(texture['defined'])
+        for part in ('glcm', 'lbp', 'gradient'):
+            self.assertIn(part, texture['undefined_parts'])
+            self.assertFalse(texture[part]['defined'])
+        self.assertIsNone(texture['glcm']['average']['contrast'])
+        self.assertEqual(texture['glcm']['total_pairs'], 0)
+        self.assertIsNone(texture['gradient']['mean_gradient'])
+        self.assertIsNone(texture['gradient']['orientation_weight'])
+        self.assertIsNone(texture['lbp']['probability'])
+        self.assertEqual(texture['lbp']['histogram'], [])
+        for entry in texture['multiscale']:
+            self.assertFalse(entry['defined'])
+            self.assertIsNone(entry['residual_std'])
+            self.assertIn(f'multiscale σ={entry["sigma"]}', texture['undefined_parts'])
+        self.assertTrue(texture['warnings'])
+
+    def test_flat_region_zero_response_is_distinguished(self):
+        """A flat region does have observations: true zeros, not undefined."""
+        canvas = np.full((60, 60, 3), 128, dtype=np.uint8)
+        sample = self.import_image(Image.fromarray(canvas))
+        self.request('PUT', sample, 'roi', {
+            'revision': 0, 'roi': {'type': 'rectangle', 'x': 10, 'y': 10, 'width': 40, 'height': 40},
+        })
+        texture = self.request('GET', sample, 'texture')
+        self.assertTrue(texture['glcm']['defined'])
+        self.assertTrue(texture['lbp']['defined'])
+        self.assertTrue(texture['gradient']['defined'])
+        self.assertGreater(texture['glcm']['region_pixels'], 0)
+        self.assertGreater(texture['glcm']['total_pairs'], 0)
+        self.assertEqual(texture['glcm']['average']['contrast'], 0)
+        self.assertIsNotNone(texture['gradient']['mean_gradient'])
+        self.assertEqual(texture['gradient']['mean_gradient'], 0)
+        self.assertEqual(texture['gradient']['std_gradient'], 0)
+        self.assertGreater(texture['gradient']['gradient_pixels'], 0)
+        self.assertEqual(texture['gradient']['orientation_weight'], [0.0] * 18)
+        self.assertAlmostEqual(sum(texture['lbp']['probability']), 1, places=6)
+        finest = texture['multiscale'][0]
+        self.assertTrue(finest['defined'])
+        self.assertGreater(finest['evaluated_pixels'], 0)
+        self.assertEqual(finest['residual_std'], 0)
+        # Large kernels do not fit in this region; that is undefined, not flat.
+        largest = texture['multiscale'][-1]
+        self.assertFalse(largest['defined'])
+        self.assertIsNone(largest['residual_std'])
+        self.assertIn(f'multiscale σ={largest["sigma"]}', texture['undefined_parts'])
+
+    def import_image(self, image):
+        buffer = io.BytesIO()
+        image.convert('RGB').save(buffer, format='PNG')
+        buffer.seek(0)
+        response = self.client.post('/api/samples', data={'file': (buffer, 'roi-test.png')})
+        self.assertEqual(response.status_code, 201, response.json)
+        imported = response.json['imported']
+        self.assertEqual(len(imported), 1, response.json)
+        return imported[0]
 
     def test_export_contents_and_report(self):
         sample = self.demo()

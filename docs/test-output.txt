@@ -8,23 +8,30 @@ test_color_texture_and_profile (test_workflows.Workflows.test_color_texture_and_
 test_crofton_circle_approximation (test_workflows.Workflows.test_crofton_circle_approximation) ... ok
 test_export_contents_and_report (test_workflows.Workflows.test_export_contents_and_report) ... ok
 test_filter_preserves_detection_and_history (test_workflows.Workflows.test_filter_preserves_detection_and_history) ... ok
+test_flat_region_zero_response_is_distinguished (test_workflows.Workflows.test_flat_region_zero_response_is_distinguished)
+A flat region does have observations: true zeros, not undefined. ... ok
 test_geometry_resets_roi_calibration_annotations (test_workflows.Workflows.test_geometry_resets_roi_calibration_annotations) ... ok
 test_input_validation (test_workflows.Workflows.test_input_validation) ... ok
 test_isolated_ground_truth (test_workflows.Workflows.test_isolated_ground_truth) ... ok
 test_manual_edit_preserves_other_split_instances (test_workflows.Workflows.test_manual_edit_preserves_other_split_instances) ... ok
 test_manual_object_removal (test_workflows.Workflows.test_manual_object_removal) ... ok
 test_mosaic_canvas_and_provenance (test_workflows.Workflows.test_mosaic_canvas_and_provenance) ... ok
+test_narrow_strip_reports_per_direction_validity (test_workflows.Workflows.test_narrow_strip_reports_per_direction_validity)
+A 1px strip has pairs along 90° only; other directions are null. ... ok
 test_phase_correlation_recovers_shift (test_workflows.Workflows.test_phase_correlation_recovers_shift) ... ok
 test_preprocessing_invalidates_analysis_and_restore (test_workflows.Workflows.test_preprocessing_invalidates_analysis_and_restore) ... ok
 test_revisions_reject_stale_write (test_workflows.Workflows.test_revisions_reject_stale_write) ... ok
 test_roi_changes_denominator_and_excludes_boundary (test_workflows.Workflows.test_roi_changes_denominator_and_excludes_boundary) ... ok
 test_same_sample_comparison_and_registration (test_workflows.Workflows.test_same_sample_comparison_and_registration) ... ok
+test_single_pixel_region_is_undefined_everywhere (test_workflows.Workflows.test_single_pixel_region_is_undefined_everywhere) ... ok
 test_skeleton_preserves_thin_structure (test_workflows.Workflows.test_skeleton_preserves_thin_structure) ... ok
 test_spatial_counts_reconcile (test_workflows.Workflows.test_spatial_counts_reconcile) ... ok
 test_statistics_reconcile_counts (test_workflows.Workflows.test_statistics_reconcile_counts) ... ok
+test_texture_ignores_background_outside_roi (test_workflows.Workflows.test_texture_ignores_background_outside_roi)
+Identical ROI content, different outside background: same results. ... ok
 test_touching_separation (test_workflows.Workflows.test_touching_separation) ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 13.845s
+Ran 29 tests in 13.117s
 
 OK

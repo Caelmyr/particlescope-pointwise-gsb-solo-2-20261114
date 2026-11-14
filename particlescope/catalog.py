@@ -133,11 +133,11 @@ def tool_catalog():
     ))
     tools.append(tool(
         'texture', '共生矩阵与局部纹理', '纹理', 'texture',
-        note='四方向GLCM、局部二值模式、梯度方向和多尺度细节。',
+        note='四方向GLCM、局部二值模式、梯度方向和多尺度细节。只使用ROI内部像素；无有效邻域的方向或尺度为null并标记未定义，不等同于零响应。',
     ))
     tools.append(tool(
         'spectrum', '径向频谱', '纹理', 'spectrum',
-        note='最大400万像素，移除均值并加Hann窗，输出频率及对应周期。',
+        note='最大400万像素，扣除ROI内部均值并加ROI内Hann窗，输出频率及对应周期；功率未按面积归一，不同ROI大小不可直接比较。',
     ))
     tools.append(tool(
         'color', '颜色空间统计', '颜色', 'color',

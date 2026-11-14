@@ -18,8 +18,8 @@
     },
     {
       "file": "particlescope/api.py",
-      "effective_lines": 649,
-      "sha256": "d2f988feba7eabea9b167f635b8f6449c60f7d3dc4067ddabf25f0d98415fc0d"
+      "effective_lines": 652,
+      "sha256": "bbb8b01e908587621357c88241580a27967bc6d160436f3763d4b624251f34cc"
     },
     {
       "file": "particlescope/boundaries.py",
@@ -29,7 +29,7 @@
     {
       "file": "particlescope/catalog.py",
       "effective_lines": 255,
-      "sha256": "8c17d72fbe242142376ac5b7c2067b582e3c3de76fc236b08373fd7b768cc3c5"
+      "sha256": "d116dc83c1b5d4ea8f4e8744a1ce306cf3124fea218f512544b1c67e99d5d312"
     },
     {
       "file": "particlescope/color_analysis.py",
@@ -43,8 +43,8 @@
     },
     {
       "file": "particlescope/exports.py",
-      "effective_lines": 153,
-      "sha256": "ede33213bbd10b9f8b75684afe57d9c599f061076cfd052c76578e2a6e3bfd27"
+      "effective_lines": 170,
+      "sha256": "8376f2be3fe056124f08cca89bf9d6d9813a0b34cb2e32224cd600314a5af0f5"
     },
     {
       "file": "particlescope/imaging.py",
@@ -123,8 +123,8 @@
     },
     {
       "file": "particlescope/texture.py",
-      "effective_lines": 167,
-      "sha256": "767edaffcbd296a49f2ae33410305e7473ae744f3d811edbebd3cd5a50873f79"
+      "effective_lines": 340,
+      "sha256": "ca1a22661e66aaae3d86e3f6c898ae2bfc4120de1f9253ac3d24e9feacc898a7"
     },
     {
       "file": "particlescope/uncertainty.py",
@@ -137,6 +137,6 @@
       "sha256": "31f7f2906c519ff841ab6bef69a0ba7671da613413ab94c47545d10fb0fa6934"
     }
   ],
-  "total": 5134,
+  "total": 5327,
   "passes_5000": true
 }
